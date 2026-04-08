@@ -1,0 +1,9 @@
+{
+  "token": "your-secret-token-here",
+  "rootPath": "/path/to/your/root",
+  "excludedNames": [
+    "node_modules",
+    ".openclaw"
+  ],
+  "excludeHidden": true
+}
