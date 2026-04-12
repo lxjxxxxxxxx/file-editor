@@ -34,10 +34,10 @@ app.use(express.json({ limit: '10mb' }));
 function authMiddleware(req, res, next) {
   const token = req.query.token || req.headers['x-auth-token'];
   if (!token) {
-    return res.status(401).json({ success: false, error: '缺少访问令牌 (token)' });
+    return res.status(401).json({ success: false, error: '缺少访问令牌 (token)，请在 URL 中添加 ?token=your-token' });
   }
   if (token !== AUTH_TOKEN) {
-    return res.status(403).json({ success: false, error: '访问令牌无效' });
+    return res.status(403).json({ success: false, error: '访问令牌无效，请检查 token 是否正确' });
   }
   next();
 }
