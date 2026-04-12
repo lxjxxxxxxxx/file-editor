@@ -129,15 +129,19 @@ npm run dev
 
 **生产模式：**
 
+后端已支持静态文件托管，只需构建前端后启动后端即可。
+
 ```bash
-# 构建前端
+# 构建前端（构建产物位于 frontend/dist 目录）
 cd frontend
 npm run build
 
-# 启动后端（前端静态文件由后端提供，需要修改后端代码支持）
-cd backend
+# 启动后端（自动托管 frontend/dist 目录）
+cd ../backend
 npm start
 ```
+
+**前端静态文件路径：** 后端会自动检测并托管 `frontend/dist` 目录（相对于后端代码的上一级目录）。
 
 ### 5. 访问应用
 
@@ -145,9 +149,12 @@ npm start
 - 前端地址：`http://localhost:5174`
 - 后端地址：`http://localhost:3002`
 
+生产模式（后端托管前端）：
+- 统一地址：`http://localhost:3002`
+
 **⚠️ 注意：** 首次访问需要在 URL 中添加 token 参数：
 ```
-http://localhost:5174/?token=your-secret-token
+http://localhost:3002/?token=your-secret-token
 ```
 
 token 必须与 `config.json` 中的 `token` 字段一致。
@@ -259,14 +266,24 @@ node index.js
 
 #### 3. 部署前端
 
+后端已内置静态文件托管功能，构建前端到 `frontend/dist` 目录即可。
+
 ```bash
 cd /path/to/file-editor/frontend
 
 # 安装依赖
 npm install
 
-# 修改 vite.config.js 中的代理地址（如果后端不是 localhost:3002）
-vim vite.config.js
+# 构建（输出到 frontend/dist 目录）
+npm run build
+
+# 构建完成后，后端会自动托管 frontend/dist 目录
+```
+
+**静态文件路径说明：**
+- 后端会自动检测 `backend/../frontend/dist` 目录
+- 如果该目录存在，后端会启用静态文件托管
+- 所有非 `/api` 路由的请求都会返回 `index.html`（支持前端 History 模式）
 
 # 构建
 npm run build
@@ -276,16 +293,15 @@ npm run build
 
 #### 4. 使用 PM2 守护进程
 
+后端会自动托管前端静态文件，只需启动后端服务即可。
+
 ```bash
 # 安装 PM2
 npm install -g pm2
 
-# 启动后端
+# 启动后端（自动托管 frontend/dist 目录）
 cd /path/to/file-editor/backend
-pm2 start index.js --name "file-editor-backend"
-
-# 启动前端（使用 serve 或 nginx）
-pm2 serve /path/to/file-editor/frontend/dist 5174 --name "file-editor-frontend"
+pm2 start index.js --name "file-editor"
 
 # 保存配置
 pm2 save
