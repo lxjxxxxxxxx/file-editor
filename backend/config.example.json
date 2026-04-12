@@ -1,5 +1,6 @@
 {
   "token": "your-secret-token-here",
+  "port": 3002,
   "rootPath": "/path/to/your/root",
   "excludedNames": [
     "node_modules",

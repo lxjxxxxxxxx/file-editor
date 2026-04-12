@@ -17,6 +17,7 @@ try {
 }
 
 const AUTH_TOKEN = CONFIG.token || 'default-token';
+const PORT = CONFIG.port || 3002;
 const ROOT_DIR = CONFIG.rootPath || '/vol2/@apphome/trim.openclaw/data/home/';
 const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2MB
 
@@ -322,7 +323,6 @@ if (hasFrontendDist) {
   });
 }
 
-const PORT = 3002;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`📂 Backend: http://0.0.0.0:${PORT}`);
   console.log(`📁 Root: ${ROOT_DIR}`);

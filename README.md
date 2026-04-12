@@ -93,6 +93,7 @@ vim config.json
 | 字段 | 类型 | 说明 | 示例 |
 |------|------|------|------|
 | `token` | string | 访问令牌，用于 API 认证 | `"your-secret-token"` |
+| `port` | number | 后端监听端口（可选，默认 3002） | `3002` |
 | `rootPath` | string | 允许编辑的根目录路径 | `"/home/user/projects"` |
 | `excludedNames` | array | 排除的文件/目录名 | `["node_modules", ".git"]` |
 | `excludeHidden` | boolean | 是否排除隐藏文件（以.开头） | `true` |

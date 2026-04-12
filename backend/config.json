@@ -1,8 +1,7 @@
 {
   "token": "file-editor-2024-secret-token",
-  "rootPath": "/vol2/@apphome/trim.openclaw/data/home",
-  "excludedNames": [
-    
-  ],
+  "port": 3002,
+  "rootPath": "./",
+  "excludedNames": [],
   "excludeHidden": false
 }
