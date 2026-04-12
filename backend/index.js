@@ -297,6 +297,31 @@ app.post('/api/files/permissions', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
+// ====== 静态文件托管（放在 API 路由之后）======
+const FRONTEND_DIST_PATH = path.join(__dirname, '..', 'frontend', 'dist');
+
+// 检查是否存在前端构建目录
+let hasFrontendDist = false;
+try {
+  fs.accessSync(FRONTEND_DIST_PATH);
+  hasFrontendDist = true;
+  console.log('📦 前端静态文件托管已启用:', FRONTEND_DIST_PATH);
+} catch {
+  console.log('ℹ️ 前端构建目录不存在，跳过静态文件托管（开发模式）');
+}
+
+// 如果有前端构建目录，启用静态文件托管
+if (hasFrontendDist) {
+  // 静态文件服务
+  app.use(express.static(FRONTEND_DIST_PATH));
+
+  // 处理前端路由的 history mode（所有非 API 路由返回 index.html）
+  app.get(/^(?!\/api).*/, (req, res) => {
+    const indexPath = path.join(FRONTEND_DIST_PATH, 'index.html');
+    res.sendFile(indexPath);
+  });
+}
+
 const PORT = 3002;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`📂 Backend: http://0.0.0.0:${PORT}`);
