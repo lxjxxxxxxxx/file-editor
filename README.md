@@ -73,7 +73,7 @@ file-editor/
 ### 1. 克隆项目
 
 ```bash
-cd /vol2/@apphome/trim.openclaw/data/home/project/file-editor
+cd file-editor
 ```
 
 ### 2. 配置后端
