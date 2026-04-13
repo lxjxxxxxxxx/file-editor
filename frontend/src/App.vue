@@ -135,34 +135,84 @@
     </el-dialog>
 
     <!-- 复制对话框 -->
-    <el-dialog v-model="copyDialogVisible" title="复制" width="450px">
+    <el-dialog v-model="copyDialogVisible" title="复制" width="550px">
       <el-form>
         <el-form-item label="来源">
           <el-input :model-value="selectedPath" disabled />
         </el-form-item>
-        <el-form-item label="目标路径">
-          <el-input v-model="copyTarget" placeholder="目标路径" />
+        <el-form-item class="vertical-form-item">
+          <div class="form-label">目标目录</div>
+          <div class="dir-tree-container">
+            <el-scrollbar class="tree-scroll">
+              <el-tree
+                :key="targetTreeKey"
+                :data="targetTreeData"
+                :props="treeProps"
+                node-key="path"
+                :load="loadTargetNode"
+                lazy
+                highlight-current
+                :expand-on-click-node="false"
+                @node-click="handleTargetSelect"
+                class="tree"
+                ref="targetTreeRef"
+              >
+                <template #default="{ data }">
+                  <span class="tree-node">
+                    <el-icon><Folder /></el-icon>
+                    <span class="tree-label">{{ data.name }}</span>
+                  </span>
+                </template>
+              </el-tree>
+            </el-scrollbar>
+          </div>
+          <el-text size="small" type="info">{{ copyTarget ? '目标: ' + copyTarget + '/' + selectedItemName : '请点击选择目标目录' }}</el-text>
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="copyDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleCopy">确认复制</el-button>
+        <el-button type="primary" @click="handleCopy" :disabled="!copyTarget">确认复制</el-button>
       </template>
     </el-dialog>
 
     <!-- 移动对话框 -->
-    <el-dialog v-model="moveDialogVisible" title="移动" width="450px">
+    <el-dialog v-model="moveDialogVisible" title="移动" width="550px">
       <el-form>
         <el-form-item label="来源">
           <el-input :model-value="selectedPath" disabled />
         </el-form-item>
-        <el-form-item label="目标路径">
-          <el-input v-model="moveTarget" placeholder="目标路径" />
+        <el-form-item class="vertical-form-item">
+          <div class="form-label">目标目录</div>
+          <div class="dir-tree-container">
+            <el-scrollbar class="tree-scroll">
+              <el-tree
+                :key="targetTreeKey"
+                :data="targetTreeData"
+                :props="treeProps"
+                node-key="path"
+                :load="loadTargetNode"
+                lazy
+                highlight-current
+                :expand-on-click-node="false"
+                @node-click="handleTargetSelect"
+                class="tree"
+                ref="targetTreeRef"
+              >
+                <template #default="{ data }">
+                  <span class="tree-node">
+                    <el-icon><Folder /></el-icon>
+                    <span class="tree-label">{{ data.name }}</span>
+                  </span>
+                </template>
+              </el-tree>
+            </el-scrollbar>
+          </div>
+          <el-text size="small" type="info">{{ moveTarget ? '目标: ' + moveTarget + '/' + selectedItemName : '请点击选择目标目录' }}</el-text>
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="moveDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleMove">确认移动</el-button>
+        <el-button type="primary" @click="handleMove" :disabled="!moveTarget">确认移动</el-button>
       </template>
     </el-dialog>
 
@@ -246,6 +296,13 @@ const moveTarget = ref('')
 const permDialogVisible = ref(false)
 const fileStat = ref(null)
 const permInput = ref('')
+
+// 目标目录树（用于复制/移动）
+const targetTreeData = ref([])
+const targetTreeRef = ref(null)
+const selectedItemName = ref('')  // 当前选中的文件/目录名
+const operationType = ref('')     // 'copy' 或 'move'
+const targetTreeKey = ref(0)      // 用于强制重新渲染树组件
 
 // 懒加载：加载节点数据
 async function loadNode(node, resolve) {
@@ -525,46 +582,188 @@ async function handleDeleteItem() {
 
 // Copy
 function showCopyDialog() {
-  copyTarget.value = selectedPath.value + '_copy'
+  operationType.value = 'copy'
+  copyTarget.value = ''
+  selectedItemName.value = selectedPath.value ? selectedPath.value.split('/').pop() : ''
+  targetTreeData.value = []
+  targetTreeKey.value++  // 强制重新渲染树组件
   copyDialogVisible.value = true
 }
 
 async function handleCopy() {
-  if (!copyTarget.value) { ElMessage.warning('请输入目标路径'); return }
-  const res = await api.copyFile(selectedPath.value, copyTarget.value)
-  if (res.success) {
-    ElMessage.success('复制成功')
-    copyDialogVisible.value = false
-    await refreshTree()
+  if (!copyTarget.value) { ElMessage.warning('请选择目标目录'); return }
+
+  const targetPath = copyTarget.value + '/' + selectedItemName.value
+
+  // 检查目标是否已存在
+  const statRes = await api.getStat(targetPath)
+  if (statRes.success) {
+    // 目标已存在，让用户选择
+    try {
+      await ElMessageBox.confirm(
+        `目标位置已存在 "${selectedItemName.value}"，是否自动重命名？`,
+        '文件已存在',
+        {
+          confirmButtonText: '自动重命名',
+          cancelButtonText: '取消',
+          type: 'warning',
+        }
+      )
+    } catch {
+      return
+    }
+
+    // 生成唯一路径
+    const uniquePath = await generateUniqueTargetPath(copyTarget.value, selectedItemName.value)
+    if (!uniquePath) {
+      ElMessage.error('无法生成唯一文件名')
+      return
+    }
+
+    const res = await api.copyFile(selectedPath.value, uniquePath)
+    if (res.success) {
+      ElMessage.success('复制成功（已重命名）')
+      copyDialogVisible.value = false
+      await refreshTree()
+    } else {
+      ElMessage.error('复制失败: ' + res.error)
+    }
   } else {
-    ElMessage.error('复制失败: ' + res.error)
+    const res = await api.copyFile(selectedPath.value, targetPath)
+    if (res.success) {
+      ElMessage.success('复制成功')
+      copyDialogVisible.value = false
+      await refreshTree()
+    } else {
+      ElMessage.error('复制失败: ' + res.error)
+    }
   }
 }
 
 // Move
 function showMoveDialog() {
-  moveTarget.value = selectedPath.value
+  operationType.value = 'move'
+  moveTarget.value = ''
+  selectedItemName.value = selectedPath.value ? selectedPath.value.split('/').pop() : ''
+  targetTreeData.value = []
+  targetTreeKey.value++  // 强制重新渲染树组件
   moveDialogVisible.value = true
 }
 
 async function handleMove() {
-  if (!moveTarget.value) { ElMessage.warning('请输入目标路径'); return }
-  const res = await api.moveFile(selectedPath.value, moveTarget.value)
-  if (res.success) {
-    ElMessage.success('移动成功')
-    moveDialogVisible.value = false
-    // Update tab path
-    const tab = openTabs.value.find(t => t.path === selectedPath.value)
-    if (tab) {
-      const idx = openTabs.value.indexOf(tab)
-      openTabs.value[idx] = { path: moveTarget.value, name: moveTarget.value.split('/').pop() }
-      if (activeTab.value === selectedPath.value) activeTab.value = moveTarget.value
+  if (!moveTarget.value) { ElMessage.warning('请选择目标目录'); return }
+
+  const targetPath = moveTarget.value + '/' + selectedItemName.value
+
+  // 检查目标是否已存在
+  const statRes = await api.getStat(targetPath)
+  if (statRes.success) {
+    // 目标已存在，让用户选择
+    try {
+      await ElMessageBox.confirm(
+        `目标位置已存在 "${selectedItemName.value}"，是否自动重命名？`,
+        '文件已存在',
+        {
+          confirmButtonText: '自动重命名',
+          cancelButtonText: '取消',
+          type: 'warning',
+        }
+      )
+    } catch {
+      return
     }
-    selectedPath.value = ''
-    await refreshTree()
+
+    // 生成唯一路径
+    const uniquePath = await generateUniqueTargetPath(moveTarget.value, selectedItemName.value)
+    if (!uniquePath) {
+      ElMessage.error('无法生成唯一文件名')
+      return
+    }
+
+    const res = await api.moveFile(selectedPath.value, uniquePath)
+    if (res.success) {
+      ElMessage.success('移动成功（已重命名）')
+      moveDialogVisible.value = false
+      // Update tab path
+      const tab = openTabs.value.find(t => t.path === selectedPath.value)
+      if (tab) {
+        const idx = openTabs.value.indexOf(tab)
+        openTabs.value[idx] = { path: uniquePath, name: uniquePath.split('/').pop() }
+        if (activeTab.value === selectedPath.value) activeTab.value = uniquePath
+      }
+      selectedPath.value = ''
+      await refreshTree()
+    } else {
+      ElMessage.error('移动失败: ' + res.error)
+    }
   } else {
-    ElMessage.error('移动失败: ' + res.error)
+    const res = await api.moveFile(selectedPath.value, targetPath)
+    if (res.success) {
+      ElMessage.success('移动成功')
+      moveDialogVisible.value = false
+      // Update tab path
+      const tab = openTabs.value.find(t => t.path === selectedPath.value)
+      if (tab) {
+        const idx = openTabs.value.indexOf(tab)
+        openTabs.value[idx] = { path: targetPath, name: targetPath.split('/').pop() }
+        if (activeTab.value === selectedPath.value) activeTab.value = targetPath
+      }
+      selectedPath.value = ''
+      await refreshTree()
+    } else {
+      ElMessage.error('移动失败: ' + res.error)
+    }
   }
+}
+
+// 加载目标目录树节点（只显示目录）
+async function loadTargetNode(node, resolve) {
+  const path = node.level === 0 ? '' : node.data.path
+  const res = await api.getTree(path)
+  if (res.success) {
+    // 只返回目录，过滤掉文件
+    const dirs = res.data.filter(item => item.isDirectory)
+    resolve(dirs)
+  } else {
+    resolve([])
+  }
+}
+
+// 选择目标目录
+function handleTargetSelect(data) {
+  if (data.isDirectory) {
+    if (operationType.value === 'copy') {
+      copyTarget.value = data.path
+    } else if (operationType.value === 'move') {
+      moveTarget.value = data.path
+    }
+  }
+}
+
+// 生成唯一的目标路径
+async function generateUniqueTargetPath(targetDir, itemName) {
+  const basePath = targetDir + '/' + itemName
+  const res = await api.getStat(basePath)
+  if (!res.success) {
+    return basePath
+  }
+  // 目标已存在，需要加后缀
+  const nameParts = itemName.split('.')
+  const ext = nameParts.length > 1 ? '.' + nameParts.pop() : ''
+  const baseName = nameParts.join('.')
+
+  let counter = 1
+  let newPath = ''
+  do {
+    newPath = targetDir + '/' + baseName + '(' + counter + ')' + ext
+    const checkRes = await api.getStat(newPath)
+    if (!checkRes.success) {
+      return newPath
+    }
+    counter++
+  } while (counter < 1000)
+
+  return null
 }
 
 // Permissions
@@ -827,6 +1026,54 @@ html, body, #app { height: 100%; overflow: hidden; }
 
 .statusbar-right {
   margin-left: auto;
+}
+
+/* 表单标签样式 */
+.form-label {
+  font-size: 14px;
+  color: #ccc;
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+/* 垂直布局的表单项 */
+.vertical-form-item :deep(.el-form-item__content) {
+  display: block;
+  width: 100%;
+}
+
+.vertical-form-item :deep(.el-form-item__label) {
+  display: none;
+}
+
+/* 目标目录树容器 */
+.dir-tree-container {
+  height: 200px;
+  border: 1px solid #444;
+  border-radius: 4px;
+  background: #252526;
+  overflow: hidden;
+}
+
+.dir-tree-container .tree-scroll {
+  height: 100%;
+}
+
+.dir-tree-container .tree {
+  background: transparent !important;
+}
+
+.dir-tree-container :deep(.el-tree-node__content) {
+  height: 28px;
+  background: transparent !important;
+}
+
+.dir-tree-container :deep(.el-tree-node__content:hover) {
+  background: #37373d !important;
+}
+
+.dir-tree-container :deep(.el-tree-node.is-current > .el-tree-node__content) {
+  background: #37373d !important;
 }
 
 /* Override element-plus dark theme bits */
