@@ -60,8 +60,21 @@
               <span class="tree-node" :class="{ 'is-root': data.isRoot }">
                 <el-icon v-if="data.isDirectory"><Folder /></el-icon>
                 <el-icon v-else><Document /></el-icon>
-                <span class="tree-label">{{ data.name }}</span>
+                <span class="tree-label">
+                  <span v-if="data.alias" class="root-alias" :title="data.name">{{ data.alias }}</span>
+                  <span v-else>{{ data.name }}</span>
+                </span>
                 <!-- 根目录显示操作按钮 -->
+                <el-button
+                  v-if="data.isRoot"
+                  type="primary"
+                  size="small"
+                  :icon="Edit"
+                  circle
+                  class="edit-alias-btn"
+                  @click.stop="showEditAliasDialog(data)"
+                  title="编辑别名"
+                />
                 <el-button
                   v-if="data.isRoot"
                   type="info"
@@ -299,10 +312,45 @@
             请输入服务器上的绝对路径，该目录将被添加到左侧文件树中。
           </el-text>
         </el-form-item>
+        <el-form-item style="margin-top: 16px;">
+          <div class="form-label">别名（可选）</div>
+          <el-input
+            v-model="newRootAlias"
+            placeholder="如: 工作项目、个人文档（留空则显示目录名）"
+            @keyup.enter="handleAddRoot"
+          />
+          <el-text size="small" type="info" style="margin-top: 8px; display: block;">
+            别名会显示在文件树中，方便识别不同目录。
+          </el-text>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="addRootDialogVisible = false">取消</el-button>
         <el-button type="primary" @click="handleAddRoot">添加</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 编辑别名对话框 -->
+    <el-dialog v-model="editAliasDialogVisible" title="编辑别名" width="450px">
+      <el-form>
+        <el-form-item label="目录路径">
+          <el-input :model-value="editAliasPath" disabled />
+        </el-form-item>
+        <el-form-item>
+          <div class="form-label">别名</div>
+          <el-input
+            v-model="editAliasValue"
+            placeholder="如: 工作项目、个人文档（留空则显示目录名）"
+            @keyup.enter="handleEditAlias"
+          />
+          <el-text size="small" type="info" style="margin-top: 8px; display: block;">
+            设置别名后，文件树中将显示别名而不是目录名。
+          </el-text>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editAliasDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleEditAlias">保存</el-button>
       </template>
     </el-dialog>
   </div>
@@ -315,7 +363,7 @@ import MonacoEditor from './MonacoEditor.vue'
 import {
   Refresh, DocumentAdd, FolderAdd, Delete, CopyDocument,
   Position, Lock, Folder, Document, Finished, EditPen, Loading,
-  Plus, Close, InfoFilled, Monitor
+  Plus, Close, InfoFilled, Monitor, Edit
 } from '@element-plus/icons-vue'
 import api from './api.js'
 
@@ -335,6 +383,13 @@ const rootPaths = ref([])  // 常驻目录列表
 const treeLoading = ref(false)  // 树加载状态
 const addRootDialogVisible = ref(false)
 const newRootPath = ref('')
+const newRootAlias = ref('')  // 新常驻目录别名
+
+// 编辑别名
+const editAliasDialogVisible = ref(false)
+const editAliasIndex = ref(0)
+const editAliasPath = ref('')
+const editAliasValue = ref('')
 
 const openTabs = ref([])
 const activeTab = ref('')
@@ -952,34 +1007,26 @@ function onKeydown(e) {
 // 显示添加常驻目录对话框
 function showAddRootDialog() {
   newRootPath.value = ''
+  newRootAlias.value = ''
   addRootDialogVisible.value = true
 }
 
 // 处理添加常驻目录
 async function handleAddRoot() {
   const path = newRootPath.value.trim()
+  const alias = newRootAlias.value.trim()
   if (!path) {
     ElMessage.warning('请输入目录路径')
     return
   }
 
-  const res = await api.addRoot(path)
+  const res = await api.addRoot(path, alias)
   if (res.success) {
     ElMessage.success('添加常驻目录成功')
     addRootDialogVisible.value = false
-    // 直接添加新目录到 rootPaths，触发 tree 组件创建
-    const newIndex = rootPaths.value.length
-    rootPaths.value.push({
-      index: newIndex,
-      path: path,
-      name: path.split(/[\\/]/).pop() || path,
-      absPath: path,
-      isRoot: true,
-      treeKey: `root-${newIndex}`,
-      isDirectory: true,
-      isFile: false,
-    })
-    // 如果 tree 已存在，刷新它
+    newRootPath.value = ''
+    newRootAlias.value = ''
+    // 刷新树
     if (treeRef.value) {
       treeRef.value.store.root.loaded = false
       treeRef.value.store.root.expand()
@@ -1016,6 +1063,31 @@ async function handleRemoveRoot(index) {
     }
   } else {
     ElMessage.error('移除失败: ' + res.error)
+  }
+}
+
+// 显示编辑别名对话框
+function showEditAliasDialog(data) {
+  editAliasIndex.value = data.rootIndex
+  editAliasPath.value = data.absPath || data.path || ''
+  editAliasValue.value = data.alias || ''
+  editAliasDialogVisible.value = true
+}
+
+// 处理编辑别名
+async function handleEditAlias() {
+  const alias = editAliasValue.value.trim()
+  const res = await api.updateRootAlias(editAliasIndex.value, alias)
+  if (res.success) {
+    ElMessage.success('别名修改成功')
+    editAliasDialogVisible.value = false
+    // 刷新树
+    if (treeRef.value) {
+      treeRef.value.store.root.loaded = false
+      treeRef.value.store.root.expand()
+    }
+  } else {
+    ElMessage.error('修改失败: ' + res.error)
   }
 }
 
@@ -1257,6 +1329,14 @@ html, body, #app { height: 100%; overflow: hidden; }
   height: 18px !important;
   padding: 0 !important;
   visibility: hidden;
+  margin-left: 4px;
+}
+
+.edit-alias-btn {
+  width: 18px !important;
+  height: 18px !important;
+  padding: 0 !important;
+  visibility: hidden;
   margin-left: auto;
 }
 
@@ -1264,11 +1344,17 @@ html, body, #app { height: 100%; overflow: hidden; }
 :deep(.el-tree-node__content:hover) .remove-root-btn,
 :deep(.el-tree-node__content.is-current) .remove-root-btn,
 :deep(.el-tree-node__content:hover) .info-root-btn,
-:deep(.el-tree-node__content.is-current) .info-root-btn {
+:deep(.el-tree-node__content.is-current) .info-root-btn,
+:deep(.el-tree-node__content:hover) .edit-alias-btn,
+:deep(.el-tree-node__content.is-current) .edit-alias-btn {
   visibility: visible;
 }
 
 .info-root-btn :deep(.el-icon) {
+  font-size: 10px;
+}
+
+.edit-alias-btn :deep(.el-icon) {
   font-size: 10px;
 }
 
@@ -1278,6 +1364,11 @@ html, body, #app { height: 100%; overflow: hidden; }
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 220px;
+}
+
+.root-alias {
+  color: #409eff;
+  font-weight: 500;
 }
 
 .editor-area {

@@ -16,6 +16,17 @@ function loadConfig() {
       CONFIG.rootPaths = [CONFIG.rootPath];
       delete CONFIG.rootPath;
     }
+    // 兼容旧配置：将字符串数组转为对象数组
+    if (CONFIG.rootPaths && Array.isArray(CONFIG.rootPaths)) {
+      CONFIG.rootPaths = CONFIG.rootPaths.map(item => {
+        if (typeof item === 'string') {
+          return { path: item, alias: '' };
+        }
+        return item;
+      });
+    } else {
+      CONFIG.rootPaths = [];
+    }
     console.log('✅ 配置文件加载成功');
   } catch (e) {
     console.error('❌ 配置文件加载失败:', e.message);
@@ -26,7 +37,8 @@ loadConfig();
 
 const AUTH_TOKEN = CONFIG.token || 'default-token';
 const PORT = CONFIG.port || 3002;
-const ROOT_PATHS = CONFIG.rootPaths || ['./'];
+// rootPaths 现在可以是对象数组，提取路径
+const ROOT_PATHS = (CONFIG.rootPaths || []).map(item => typeof item === 'string' ? item : item.path).filter(Boolean) || ['./'];
 const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2MB
 
 // 从配置读取排除规则
@@ -92,13 +104,16 @@ function resolvePath(filePath, rootIndex = 0) {
 
 // 获取所有根目录的绝对路径
 function getRootPathsInfo() {
-  return ROOT_PATHS.map((rp, index) => {
+  return (CONFIG.rootPaths || []).map((item, index) => {
+    const rp = typeof item === 'string' ? item : item.path;
+    const alias = typeof item === 'string' ? '' : (item.alias || '');
     const absPath = path.resolve(rp);
     return {
       index,
       path: rp,
-      name: path.basename(absPath) || rp,
-      absPath: absPath
+      name: alias || path.basename(absPath) || rp,
+      absPath: absPath,
+      alias: alias
     };
   });
 }
@@ -195,6 +210,7 @@ app.get('/api/files/tree', async (req, res) => {
             path: '',
             rootIndex: info.index,
             absPath: info.absPath,
+            alias: info.alias,
             isDirectory: stat.isDirectory(),
             isFile: stat.isFile(),
             size: stat.size,
@@ -380,7 +396,7 @@ app.get('/api/roots', (req, res) => {
 // 11. 添加常驻目录
 app.post('/api/roots', async (req, res) => {
   try {
-    const { path: newPath } = req.body;
+    const { path: newPath, alias = '' } = req.body;
     if (!newPath) return res.status(400).json({ success: false, error: '缺少 path' });
 
     // 验证路径是否存在且是目录
@@ -395,13 +411,18 @@ app.post('/api/roots', async (req, res) => {
     }
 
     // 检查是否已存在
-    if (ROOT_PATHS.some(rp => path.resolve(rp) === absPath)) {
+    const existingPaths = CONFIG.rootPaths.map(item =>
+      path.resolve(typeof item === 'string' ? item : item.path)
+    );
+    if (existingPaths.some(p => p === absPath)) {
       return res.status(400).json({ success: false, error: '该目录已在常驻列表中' });
     }
 
-    // 添加到配置
+    // 添加到配置（对象格式）
+    CONFIG.rootPaths.push({ path: newPath, alias: alias.trim() });
+
+    // 更新 ROOT_PATHS
     ROOT_PATHS.push(newPath);
-    CONFIG.rootPaths = ROOT_PATHS;
 
     if (saveConfig()) {
       res.json({ success: true, message: '添加成功', data: getRootPathsInfo() });
@@ -415,15 +436,47 @@ app.post('/api/roots', async (req, res) => {
 app.delete('/api/roots', (req, res) => {
   try {
     const index = parseInt(req.query.index, 10);
-    if (isNaN(index) || index < 0 || index >= ROOT_PATHS.length) {
+    const rootPathsArr = CONFIG.rootPaths || [];
+    if (isNaN(index) || index < 0 || index >= rootPathsArr.length) {
       return res.status(400).json({ success: false, error: '无效的索引' });
     }
 
-    const removed = ROOT_PATHS.splice(index, 1);
-    CONFIG.rootPaths = ROOT_PATHS;
+    const removed = rootPathsArr.splice(index, 1);
+    CONFIG.rootPaths = rootPathsArr;
+    // 更新 ROOT_PATHS
+    ROOT_PATHS.splice(index, 1);
+
+    const removedPath = typeof removed[0] === 'string' ? removed[0] : (removed[0]?.path || '未知');
 
     if (saveConfig()) {
-      res.json({ success: true, message: '已移除常驻目录: ' + removed[0], data: getRootPathsInfo() });
+      res.json({ success: true, message: '已移除常驻目录: ' + removedPath, data: getRootPathsInfo() });
+    } else {
+      res.status(500).json({ success: false, error: '保存配置失败' });
+    }
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// 13. 修改常驻目录别名
+app.put('/api/roots', (req, res) => {
+  try {
+    const { index, alias } = req.body;
+    const idx = parseInt(index, 10);
+    const rootPathsArr = CONFIG.rootPaths || [];
+    if (isNaN(idx) || idx < 0 || idx >= rootPathsArr.length) {
+      return res.status(400).json({ success: false, error: '无效的索引' });
+    }
+
+    // 更新别名
+    const item = rootPathsArr[idx];
+    if (typeof item === 'string') {
+      rootPathsArr[idx] = { path: item, alias: (alias || '').trim() };
+    } else {
+      item.alias = (alias || '').trim();
+    }
+    CONFIG.rootPaths = rootPathsArr;
+
+    if (saveConfig()) {
+      res.json({ success: true, message: '别名修改成功', data: getRootPathsInfo() });
     } else {
       res.status(500).json({ success: false, error: '保存配置失败' });
     }
