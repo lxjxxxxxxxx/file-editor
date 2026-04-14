@@ -8,17 +8,25 @@ const mime = require('mime-types');
 // ====== 加载配置 ======
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 let CONFIG = {};
-try {
-  CONFIG = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-  console.log('✅ 配置文件加载成功');
-} catch (e) {
-  console.error('❌ 配置文件加载失败:', e.message);
-  process.exit(1);
+function loadConfig() {
+  try {
+    CONFIG = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    // 兼容旧配置：将 rootPath 转为 rootPaths
+    if (CONFIG.rootPath && !CONFIG.rootPaths) {
+      CONFIG.rootPaths = [CONFIG.rootPath];
+      delete CONFIG.rootPath;
+    }
+    console.log('✅ 配置文件加载成功');
+  } catch (e) {
+    console.error('❌ 配置文件加载失败:', e.message);
+    process.exit(1);
+  }
 }
+loadConfig();
 
 const AUTH_TOKEN = CONFIG.token || 'default-token';
 const PORT = CONFIG.port || 3002;
-const ROOT_DIR = CONFIG.rootPath || '/vol2/@apphome/trim.openclaw/data/home/';
+const ROOT_PATHS = CONFIG.rootPaths || ['./'];
 const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2MB
 
 // 从配置读取排除规则
@@ -71,12 +79,39 @@ const BINARY_SIGNATURES = [
 ];
 
 // ====== 工具函数 ======
-function resolvePath(filePath) {
-  const resolved = path.resolve(ROOT_DIR, filePath);
-  if (!resolved.startsWith(path.resolve(ROOT_DIR) + path.sep) && resolved !== path.resolve(ROOT_DIR)) {
+// 验证路径是否在允许的根目录范围内
+function resolvePath(filePath, rootIndex = 0) {
+  const rootDir = ROOT_PATHS[rootIndex] || ROOT_PATHS[0];
+  const resolvedRoot = path.resolve(rootDir);
+  const resolved = path.resolve(rootDir, filePath);
+  if (!resolved.startsWith(resolvedRoot + path.sep) && resolved !== resolvedRoot) {
     throw new Error('路径越权访问被拒绝');
   }
   return resolved;
+}
+
+// 获取所有根目录的绝对路径
+function getRootPathsInfo() {
+  return ROOT_PATHS.map((rp, index) => {
+    const absPath = path.resolve(rp);
+    return {
+      index,
+      path: rp,
+      name: path.basename(absPath) || rp,
+      absPath: absPath
+    };
+  });
+}
+
+// 保存配置到文件
+function saveConfig() {
+  try {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(CONFIG, null, 2), 'utf8');
+    return true;
+  } catch (e) {
+    console.error('保存配置失败:', e.message);
+    return false;
+  }
 }
 
 async function isTextFile(realPath, filePath) {
@@ -141,11 +176,39 @@ async function buildTree(dirPath, relativeBase, depth, maxDepth) {
 
 // ====== API ======
 
-// 1. 文件树 - 支持懒加载，只加载一层
+// 1. 文件树 - 支持懒加载，只加载一层，支持多根目录
 app.get('/api/files/tree', async (req, res) => {
   try {
     const subDir = req.query.path || '';
-    const real = resolvePath(subDir);
+    const rootIndex = parseInt(req.query.rootIndex || req.query.root || '0', 10);
+    const listRoots = req.query.listRoots === 'true';
+
+    // 只有当请求的是全局根（没有指定具体根目录或明确请求根列表）时才返回所有常驻目录
+    if (!subDir && listRoots) {
+      const rootInfos = getRootPathsInfo();
+      const tree = [];
+      for (const info of rootInfos) {
+        try {
+          const stat = await fsPromises.lstat(info.absPath);
+          tree.push({
+            name: info.name,
+            path: '',
+            rootIndex: info.index,
+            absPath: info.absPath,
+            isDirectory: stat.isDirectory(),
+            isFile: stat.isFile(),
+            size: stat.size,
+            mtime: stat.mtimeMs,
+            mode: (stat.mode & 0o777).toString(8).padStart(3, '0'),
+            children: stat.isDirectory() ? [] : undefined,
+          });
+        } catch { /* skip invalid root */ }
+      }
+      res.json({ success: true, data: tree, isMultiRoot: true });
+      return;
+    }
+
+    const real = resolvePath(subDir, rootIndex);
     // 懒加载模式：只加载当前目录的直接子项，不递归
     const entries = await fsPromises.readdir(real, { withFileTypes: true });
     const tree = [];
@@ -161,6 +224,7 @@ app.get('/api/files/tree', async (req, res) => {
         tree.push({
           name: entry.name,
           path: rel,
+          rootIndex: rootIndex,
           isDirectory: stat.isDirectory(),
           isFile: stat.isFile(),
           size: stat.size,
@@ -183,8 +247,9 @@ app.get('/api/files/tree', async (req, res) => {
 app.get('/api/files/content', async (req, res) => {
   try {
     const fp = req.query.path;
+    const rootIndex = parseInt(req.query.rootIndex || req.query.root || '0', 10);
     if (!fp) return res.status(400).json({ success: false, error: '缺少 path' });
-    const real = resolvePath(fp);
+    const real = resolvePath(fp, rootIndex);
     const stat = await fsPromises.stat(real);
     if (!stat.isFile()) return res.status(400).json({ success: false, error: '不是文件' });
     if (stat.size > MAX_FILE_SIZE) return res.status(400).json({ success: false, error: '超过 2MB 限制' });
@@ -199,8 +264,9 @@ app.get('/api/files/content', async (req, res) => {
 app.post('/api/files/save', async (req, res) => {
   try {
     const { path: fp, content } = req.body;
+    const rootIndex = parseInt(req.body.rootIndex || req.body.root || '0', 10);
     if (!fp) return res.status(400).json({ success: false, error: '缺少 path' });
-    const real = resolvePath(fp);
+    const real = resolvePath(fp, rootIndex);
     const ex = await fsPromises.stat(real).catch(() => null);
     if (ex && ex.isDirectory()) return res.status(400).json({ success: false, error: '不能覆盖目录' });
     await fsPromises.mkdir(path.dirname(real), { recursive: true });
@@ -213,8 +279,9 @@ app.post('/api/files/save', async (req, res) => {
 app.post('/api/files/create', async (req, res) => {
   try {
     const { path: fp, type } = req.body;
+    const rootIndex = parseInt(req.body.rootIndex || req.body.root || '0', 10);
     if (!fp) return res.status(400).json({ success: false, error: '缺少 path' });
-    const real = resolvePath(fp);
+    const real = resolvePath(fp, rootIndex);
     const ex = await fsPromises.stat(real).catch(() => null);
     if (ex) return res.status(400).json({ success: false, error: '目标已存在' });
     if (type === 'directory') {
@@ -231,8 +298,9 @@ app.post('/api/files/create', async (req, res) => {
 app.delete('/api/files/delete', async (req, res) => {
   try {
     const fp = req.query.path || (req.body && req.body.path);
+    const rootIndex = parseInt(req.query.rootIndex || req.query.root || req.body?.rootIndex || req.body?.root || '0', 10);
     if (!fp) return res.status(400).json({ success: false, error: '缺少 path' });
-    const real = resolvePath(fp);
+    const real = resolvePath(fp, rootIndex);
     const stat = await fsPromises.stat(real);
     if (stat.isDirectory()) await fsPromises.rm(real, { recursive: true });
     else await fsPromises.unlink(real);
@@ -244,8 +312,10 @@ app.delete('/api/files/delete', async (req, res) => {
 app.post('/api/files/copy', async (req, res) => {
   try {
     const { from, to } = req.body;
+    const fromRoot = parseInt(req.body.fromRoot || req.body.rootIndex || req.body.root || '0', 10);
+    const toRoot = parseInt(req.body.toRoot || req.body.rootIndex || req.body.root || '0', 10);
     if (!from || !to) return res.status(400).json({ success: false, error: '缺少 from 或 to' });
-    const fromR = resolvePath(from), toR = resolvePath(to);
+    const fromR = resolvePath(from, fromRoot), toR = resolvePath(to, toRoot);
     const ex = await fsPromises.stat(toR).catch(() => null);
     if (ex) return res.status(400).json({ success: false, error: '目标已存在' });
     const stat = await fsPromises.stat(fromR);
@@ -259,8 +329,10 @@ app.post('/api/files/copy', async (req, res) => {
 app.post('/api/files/move', async (req, res) => {
   try {
     const { from, to } = req.body;
+    const fromRoot = parseInt(req.body.fromRoot || req.body.rootIndex || req.body.root || '0', 10);
+    const toRoot = parseInt(req.body.toRoot || req.body.rootIndex || req.body.root || '0', 10);
     if (!from || !to) return res.status(400).json({ success: false, error: '缺少 from 或 to' });
-    const fromR = resolvePath(from), toR = resolvePath(to);
+    const fromR = resolvePath(from, fromRoot), toR = resolvePath(to, toRoot);
     const ex = await fsPromises.stat(toR).catch(() => null);
     if (ex) return res.status(400).json({ success: false, error: '目标已存在' });
     await fsPromises.rename(fromR, toR);
@@ -272,8 +344,9 @@ app.post('/api/files/move', async (req, res) => {
 app.get('/api/files/stat', async (req, res) => {
   try {
     const fp = req.query.path;
+    const rootIndex = parseInt(req.query.rootIndex || req.query.root || '0', 10);
     if (!fp) return res.status(400).json({ success: false, error: '缺少 path' });
-    const real = resolvePath(fp);
+    const real = resolvePath(fp, rootIndex);
     const stat = await fsPromises.stat(real);
     res.json({ success: true, data: {
       name: path.basename(fp), path: fp,
@@ -290,11 +363,70 @@ app.get('/api/files/stat', async (req, res) => {
 app.post('/api/files/permissions', async (req, res) => {
   try {
     const { path: fp, mode } = req.body;
+    const rootIndex = parseInt(req.body.rootIndex || req.body.root || '0', 10);
     if (!fp) return res.status(400).json({ success: false, error: '缺少 path' });
     if (!mode || !/^[0-7]{3,4}$/.test(mode)) return res.status(400).json({ success: false, error: '权限格式错误' });
-    const real = resolvePath(fp);
+    const real = resolvePath(fp, rootIndex);
     await fsPromises.chmod(real, parseInt(mode, 8));
     res.json({ success: true, message: '权限修改成功', data: { mode: mode.padStart(3, '0') } });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// 10. 获取常驻目录列表
+app.get('/api/roots', (req, res) => {
+  res.json({ success: true, data: getRootPathsInfo() });
+});
+
+// 11. 添加常驻目录
+app.post('/api/roots', async (req, res) => {
+  try {
+    const { path: newPath } = req.body;
+    if (!newPath) return res.status(400).json({ success: false, error: '缺少 path' });
+
+    // 验证路径是否存在且是目录
+    const absPath = path.resolve(newPath);
+    try {
+      const stat = await fsPromises.stat(absPath);
+      if (!stat.isDirectory()) {
+        return res.status(400).json({ success: false, error: '路径不是目录' });
+      }
+    } catch {
+      return res.status(400).json({ success: false, error: '路径不存在或无法访问' });
+    }
+
+    // 检查是否已存在
+    if (ROOT_PATHS.some(rp => path.resolve(rp) === absPath)) {
+      return res.status(400).json({ success: false, error: '该目录已在常驻列表中' });
+    }
+
+    // 添加到配置
+    ROOT_PATHS.push(newPath);
+    CONFIG.rootPaths = ROOT_PATHS;
+
+    if (saveConfig()) {
+      res.json({ success: true, message: '添加成功', data: getRootPathsInfo() });
+    } else {
+      res.status(500).json({ success: false, error: '保存配置失败' });
+    }
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// 12. 删除常驻目录（仅从配置中移除，不删除实际目录）
+app.delete('/api/roots', (req, res) => {
+  try {
+    const index = parseInt(req.query.index, 10);
+    if (isNaN(index) || index < 0 || index >= ROOT_PATHS.length) {
+      return res.status(400).json({ success: false, error: '无效的索引' });
+    }
+
+    const removed = ROOT_PATHS.splice(index, 1);
+    CONFIG.rootPaths = ROOT_PATHS;
+
+    if (saveConfig()) {
+      res.json({ success: true, message: '已移除常驻目录: ' + removed[0], data: getRootPathsInfo() });
+    } else {
+      res.status(500).json({ success: false, error: '保存配置失败' });
+    }
   } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
 
@@ -325,5 +457,5 @@ if (hasFrontendDist) {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`📂 Backend: http://0.0.0.0:${PORT}`);
-  console.log(`📁 Root: ${ROOT_DIR}`);
+  console.log(`📁 Root Paths: ${ROOT_PATHS.join(', ')}`);
 });

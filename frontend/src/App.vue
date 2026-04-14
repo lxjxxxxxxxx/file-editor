@@ -19,12 +19,34 @@
     <el-container class="main-container">
       <!-- 左侧文件树 -->
       <el-aside width="280px" class="sidebar">
-        <div class="sidebar-header">文件树</div>
+        <div class="sidebar-header">
+          <span>文件树</span>
+          <el-button
+            type="primary"
+            size="small"
+            :icon="Plus"
+            circle
+            class="add-root-btn"
+            @click="showAddRootDialog"
+            title="添加常驻目录"
+          />
+        </div>
         <el-scrollbar class="tree-scroll">
+          <!-- 空状态提示 -->
+          <div v-if="rootPaths.length === 0 && !treeLoading" class="empty-roots">
+            <el-empty description="暂无常驻目录">
+              <template #default>
+                <div class="empty-hint">
+                  <p>点击上方 + 按钮添加目录</p>
+                </div>
+              </template>
+            </el-empty>
+          </div>
+          <!-- tree 始终渲染，使用 data 控制内容 -->
           <el-tree
             :data="treeData"
             :props="treeProps"
-            node-key="path"
+            node-key="treeKey"
             :load="loadNode"
             lazy
             highlight-current
@@ -35,10 +57,31 @@
             ref="treeRef"
           >
             <template #default="{ data }">
-              <span class="tree-node">
+              <span class="tree-node" :class="{ 'is-root': data.isRoot }">
                 <el-icon v-if="data.isDirectory"><Folder /></el-icon>
                 <el-icon v-else><Document /></el-icon>
                 <span class="tree-label">{{ data.name }}</span>
+                <!-- 根目录显示操作按钮 -->
+                <el-button
+                  v-if="data.isRoot"
+                  type="info"
+                  size="small"
+                  :icon="InfoFilled"
+                  circle
+                  class="info-root-btn"
+                  @click.stop="showRootInfo(data)"
+                  title="查看信息"
+                />
+                <el-button
+                  v-if="data.isRoot"
+                  type="danger"
+                  size="small"
+                  :icon="Close"
+                  circle
+                  class="remove-root-btn"
+                  @click.stop="handleRemoveRoot(data.rootIndex)"
+                  title="从文件树移除"
+                />
               </span>
             </template>
           </el-tree>
@@ -59,9 +102,9 @@
         >
           <el-tab-pane
             v-for="tab in openTabs"
-            :key="tab.path"
+            :key="tab.rootIndex + '-' + tab.path"
             :label="tab.name"
-            :name="tab.path"
+            :name="tab.rootIndex + '-' + tab.path"
           />
         </el-tabs>
 
@@ -76,7 +119,7 @@
             <MonacoEditor
               v-if="activeTab"
               :key="editorKey"
-              :path="activeTab"
+              :path="parseActiveTab(activeTab).path"
               :code="editorContent"
               @change="onCodeChange"
               :options="editorOptions"
@@ -113,7 +156,7 @@
 
     <!-- 底部状态栏 -->
     <el-footer height="28px" class="statusbar">
-      <span v-if="activeTab">📄 {{ activeTab }}</span>
+      <span v-if="activeTab">📄 {{ parseActiveTab(activeTab).path }}</span>
       <span v-if="currentFileStat"> | {{ formatSize(currentFileStat.size) }} | 权限: {{ currentFileStat.mode }}</span>
       <span class="statusbar-right">🐮 阿牛在线文件编辑器</span>
     </el-footer>
@@ -148,7 +191,7 @@
                 :key="targetTreeKey"
                 :data="targetTreeData"
                 :props="treeProps"
-                node-key="path"
+                node-key="treeKey"
                 :load="loadTargetNode"
                 lazy
                 highlight-current
@@ -158,15 +201,16 @@
                 ref="targetTreeRef"
               >
                 <template #default="{ data }">
-                  <span class="tree-node">
-                    <el-icon><Folder /></el-icon>
+                  <span class="tree-node" :class="{ 'is-root': data.isRoot }">
+                    <el-icon v-if="data.isRoot"><Monitor /></el-icon>
+                    <el-icon v-else><Folder /></el-icon>
                     <span class="tree-label">{{ data.name }}</span>
                   </span>
                 </template>
               </el-tree>
             </el-scrollbar>
           </div>
-          <el-text size="small" type="info">{{ copyTarget ? '目标: ' + copyTarget + '/' + selectedItemName : '请点击选择目标目录' }}</el-text>
+          <el-text size="small" type="info">{{ copyTargetDisplay }}</el-text>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -189,7 +233,7 @@
                 :key="targetTreeKey"
                 :data="targetTreeData"
                 :props="treeProps"
-                node-key="path"
+                node-key="treeKey"
                 :load="loadTargetNode"
                 lazy
                 highlight-current
@@ -199,15 +243,16 @@
                 ref="targetTreeRef"
               >
                 <template #default="{ data }">
-                  <span class="tree-node">
-                    <el-icon><Folder /></el-icon>
+                  <span class="tree-node" :class="{ 'is-root': data.isRoot }">
+                    <el-icon v-if="data.isRoot"><Monitor /></el-icon>
+                    <el-icon v-else><Folder /></el-icon>
                     <span class="tree-label">{{ data.name }}</span>
                   </span>
                 </template>
               </el-tree>
             </el-scrollbar>
           </div>
-          <el-text size="small" type="info">{{ moveTarget ? '目标: ' + moveTarget + '/' + selectedItemName : '请点击选择目标目录' }}</el-text>
+          <el-text size="small" type="info">{{ moveTargetDisplay }}</el-text>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -239,16 +284,38 @@
         <el-button type="primary" @click="handleSetPerm">确认</el-button>
       </template>
     </el-dialog>
+
+    <!-- 添加常驻目录对话框 -->
+    <el-dialog v-model="addRootDialogVisible" title="添加常驻目录" width="500px">
+      <el-form>
+        <el-form-item>
+          <div class="form-label">目录路径</div>
+          <el-input
+            v-model="newRootPath"
+            placeholder="如: /home/user/projects 或 C:\\Users\\user\\Documents"
+            @keyup.enter="handleAddRoot"
+          />
+          <el-text size="small" type="info" style="margin-top: 8px; display: block;">
+            请输入服务器上的绝对路径，该目录将被添加到左侧文件树中。
+          </el-text>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="addRootDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleAddRoot">添加</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, watch, nextTick } from 'vue'
+import { ref, reactive, onMounted, watch, nextTick, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MonacoEditor from './MonacoEditor.vue'
 import {
   Refresh, DocumentAdd, FolderAdd, Delete, CopyDocument,
-  Position, Lock, Folder, Document, Finished, EditPen, Loading
+  Position, Lock, Folder, Document, Finished, EditPen, Loading,
+  Plus, Close, InfoFilled, Monitor
 } from '@element-plus/icons-vue'
 import api from './api.js'
 
@@ -256,11 +323,18 @@ const treeData = ref([])
 const treeProps = {
   label: 'name',
   children: 'children',
-  isLeaf: (data) => data.isFile,
+  isLeaf: (data) => data.isFile && !data.isRoot,
 }
 const treeRef = ref(null)
 const selectedPath = ref('')
 const selectedNodeData = ref(null)
+const selectedRootIndex = ref(0)  // 当前选中的根目录索引
+
+// 常驻目录管理
+const rootPaths = ref([])  // 常驻目录列表
+const treeLoading = ref(false)  // 树加载状态
+const addRootDialogVisible = ref(false)
+const newRootPath = ref('')
 
 const openTabs = ref([])
 const activeTab = ref('')
@@ -271,6 +345,22 @@ const saving = ref(false)
 const currentFileStat = ref(null)
 const cursorPos = ref(null)
 const monacoRef = ref(null)
+
+// 辅助函数：解析 activeTab 获取 rootIndex 和 path
+function parseActiveTab(tabKey) {
+  if (!tabKey) return { rootIndex: 0, path: '' }
+  const match = tabKey.match(/^(\d+)-(.+)$/)
+  if (match) {
+    return { rootIndex: parseInt(match[1], 10), path: match[2] }
+  }
+  // 兼容旧格式
+  return { rootIndex: 0, path: tabKey }
+}
+
+// 辅助函数：创建 activeTab key
+function makeTabKey(rootIndex, path) {
+  return `${rootIndex}-${path}`
+}
 
 const editorOptions = {
   automaticLayout: true,
@@ -291,11 +381,25 @@ const newPath = ref('')
 const newParentPath = ref('')
 const copyDialogVisible = ref(false)
 const copyTarget = ref('')
+const copyTargetRootIndex = ref(0)  // 目标根目录索引
 const moveDialogVisible = ref(false)
 const moveTarget = ref('')
+const moveTargetRootIndex = ref(0)  // 目标根目录索引
 const permDialogVisible = ref(false)
 const fileStat = ref(null)
 const permInput = ref('')
+
+// 复制/移动目标路径显示
+const copyTargetDisplay = computed(() => {
+  if (!copyTarget.value) return '请点击选择目标目录'
+  const rootName = rootPaths.value.find(r => r.rootIndex === copyTargetRootIndex.value)?.name || '未知'
+  return `目标: [${rootName}] ${copyTarget.value}/${selectedItemName.value}`
+})
+const moveTargetDisplay = computed(() => {
+  if (!moveTarget.value) return '请点击选择目标目录'
+  const rootName = rootPaths.value.find(r => r.rootIndex === moveTargetRootIndex.value)?.name || '未知'
+  return `目标: [${rootName}] ${moveTarget.value}/${selectedItemName.value}`
+})
 
 // 目标目录树（用于复制/移动）
 const targetTreeData = ref([])
@@ -306,72 +410,64 @@ const targetTreeKey = ref(0)      // 用于强制重新渲染树组件
 
 // 懒加载：加载节点数据
 async function loadNode(node, resolve) {
-  const path = node.level === 0 ? '' : node.data.path
-  const res = await api.getTree(path)
-  if (res.success) {
-    resolve(res.data)
+  if (node.level === 0) {
+    treeLoading.value = true
+    // 第一层：加载所有常驻目录（根目录列表）
+    const res = await api.getTree('', 0, true)  // 第三个参数表示获取根列表
+    treeLoading.value = false
+    if (res.success) {
+      // 为每个根节点添加标记
+      const roots = res.data.map(item => ({
+        ...item,
+        isRoot: true,
+        treeKey: `root-${item.rootIndex}`,
+      }))
+      rootPaths.value = roots
+      // 如果没有常驻目录，显示空列表
+      resolve(roots)
+    } else {
+      rootPaths.value = []
+      resolve([])
+      ElMessage.error('加载常驻目录失败: ' + (res.error || '未知错误'))
+    }
   } else {
-    resolve([])
-    ElMessage.error('加载失败: ' + (res.error || '未知错误'))
+    // 子目录：使用节点的 rootIndex
+    const path = node.data.path
+    const rootIndex = node.data.rootIndex || 0
+    const res = await api.getTree(path, rootIndex)
+    if (res.success) {
+      // 为子节点添加 rootIndex
+      const children = res.data.map(item => ({
+        ...item,
+        rootIndex: rootIndex,
+        treeKey: `${rootIndex}-${item.path}`,
+      }))
+      resolve(children)
+    } else {
+      resolve([])
+      ElMessage.error('加载失败: ' + (res.error || '未知错误'))
+    }
   }
 }
 
 // 刷新当前选中的目录
 async function refreshTree() {
   if (!treeRef.value) return
-  
-  // 确定要刷新的目录路径
-  let targetPath = ''
-  let targetNode = null
-  
-  if (selectedPath.value && selectedNodeData.value) {
-    if (selectedNodeData.value.isDirectory) {
-      // 选中的是目录，刷新该目录
-      targetPath = selectedPath.value
-      targetNode = treeRef.value.getNode(targetPath)
-    } else {
-      // 选中的是文件，刷新文件所在的父目录
-      const parts = selectedPath.value.split('/')
-      parts.pop()
-      targetPath = parts.join('/')
-      if (targetPath) {
-        targetNode = treeRef.value.getNode(targetPath)
-      } else {
-        // 文件在根目录，刷新根节点
-        targetNode = treeRef.value.store.root
-      }
-    }
-  } else {
-    // 没有选中项，刷新根目录
-    targetNode = treeRef.value.store.root
-  }
-  
-  // 如果目标节点不存在（可能已被删除），尝试刷新上一级
-  if (!targetNode && targetPath) {
-    const parts = targetPath.split('/')
-    parts.pop()
-    const parentPath = parts.join('/')
-    if (parentPath) {
-      targetNode = treeRef.value.getNode(parentPath)
-    } else {
-      targetNode = treeRef.value.store.root
-    }
-  }
-  
-  // 执行刷新
-  if (targetNode) {
-    targetNode.loaded = false
-    targetNode.expand()
-  }
+
+  // 多根目录模式下，直接刷新根节点
+  treeRef.value.store.root.loaded = false
+  treeRef.value.store.root.expand()
 }
 
 function handleCurrentChange(data) {
   if (data) {
     selectedPath.value = data.path
     selectedNodeData.value = data
+    selectedRootIndex.value = data.rootIndex || 0
   } else {
     selectedPath.value = ''
     selectedNodeData.value = null
+    selectedRootIndex.value = 0
   }
 }
 
@@ -379,39 +475,46 @@ function handleCurrentChange(data) {
 const fileLoading = ref(false)
 const fileLoadingPath = ref('')
 
-async function openFile(filePath, fileName) {
+async function openFile(filePath, fileName, rootIndex = 0) {
+  const tabKey = makeTabKey(rootIndex, filePath)
   // Check if already open
-  const existing = openTabs.value.find(t => t.path === filePath)
+  const existing = openTabs.value.find(t => t.path === filePath && t.rootIndex === rootIndex)
   if (existing) {
-    activeTab.value = filePath
+    activeTab.value = tabKey
     return
   }
   // Open in tab - watch(activeTab) 会自动调用 loadFileContent
-  openTabs.value.push({ path: filePath, name: fileName })
-  activeTab.value = filePath
+  openTabs.value.push({ path: filePath, name: fileName, rootIndex })
+  activeTab.value = tabKey
 }
 
-async function loadFileContent(filePath) {
+async function loadFileContent(tabKey) {
+  const { rootIndex, path: filePath } = parseActiveTab(tabKey)
+  if (!filePath) return
+  // 获取当前 tab
+  const tab = openTabs.value.find(t => t.path === filePath && t.rootIndex === rootIndex)
+  if (!tab) return
+
   fileLoading.value = true
   fileLoadingPath.value = filePath
   ElMessage.info({ message: `正在加载: ${filePath.split('/').pop()}`, duration: 1500 })
-  
-  const res = await api.getContent(filePath)
-  
+
+  const res = await api.getContent(filePath, rootIndex)
+
   fileLoading.value = false
   fileLoadingPath.value = ''
-  
+
   if (res.success) {
     editorContent.value = res.data.content
     editorKey.value++
     isModified.value = false
     currentFileStat.value = res.data
-    
+
     // 显示加载成功提示，包括文件大小
     const sizeStr = formatSize(res.data.size || 0)
     ElMessage.success({ message: `加载成功 (${sizeStr})`, duration: 2000 })
-    
-    await api.getStat(filePath).then(r => {
+
+    await api.getStat(filePath, rootIndex).then(r => {
       if (r.success) currentFileStat.value = r.data
     })
   } else {
@@ -423,19 +526,21 @@ function onTabClick(tab) {
   // Already handled by v-model on activeTab
 }
 
-async function onTabRemove(filePath) {
-  const tab = openTabs.value.find(t => t.path === filePath)
+async function onTabRemove(tabKey) {
+  const { rootIndex, path: filePath } = parseActiveTab(tabKey)
+  const tab = openTabs.value.find(t => t.path === filePath && t.rootIndex === rootIndex)
   if (tab) {
-    if (isModified.value && activeTab.value === filePath) {
+    if (isModified.value && activeTab.value === tabKey) {
       try {
         await ElMessageBox.confirm(`${tab.name} 有未保存的更改，确定关闭？`, '警告', { type: 'warning' })
       } catch { return }
     }
-    openTabs.value = openTabs.value.filter(t => t.path !== filePath)
-    if (activeTab.value === filePath) {
+    openTabs.value = openTabs.value.filter(t => !(t.path === filePath && t.rootIndex === rootIndex))
+    if (activeTab.value === tabKey) {
       // 只切换 activeTab，让 watch 自动加载文件内容
-      activeTab.value = openTabs.value.length ? openTabs.value[openTabs.value.length - 1].path : ''
-      if (!activeTab.value) { 
+      const lastTab = openTabs.value[openTabs.value.length - 1]
+      activeTab.value = lastTab ? makeTabKey(lastTab.rootIndex, lastTab.path) : ''
+      if (!activeTab.value) {
         currentFileStat.value = null
         editorContent.value = ''
       }
@@ -456,9 +561,10 @@ function onCodeChange(newCode) {
 
 async function handleSave() {
   if (!activeTab.value) return
+  const { rootIndex, path: filePath } = parseActiveTab(activeTab.value)
   saving.value = true
   try {
-    const res = await api.saveFile(activeTab.value, editorContent.value)
+    const res = await api.saveFile(filePath, editorContent.value, rootIndex)
     if (res.success) {
       ElMessage.success('保存成功')
       isModified.value = false
@@ -480,8 +586,9 @@ function formatSize(bytes) {
 function handleNodeClick(data) {
   selectedPath.value = data.path
   selectedNodeData.value = data
+  selectedRootIndex.value = data.rootIndex || 0
   if (data.isFile) {
-    openFile(data.path, data.name)
+    openFile(data.path, data.name, data.rootIndex || 0)
   }
 }
 
@@ -513,7 +620,7 @@ async function handleCreate() {
   // 输入的名称必须不为空
   const name = newPath.value.trim()
   if (!name) { ElMessage.warning('请输入文件/文件夹名称'); return }
-  
+
   // 拼接父目录 + 名称
   let fullPath
   if (newParentPath.value && newParentPath.value !== '(根目录)') {
@@ -521,8 +628,8 @@ async function handleCreate() {
   } else {
     fullPath = name
   }
-  
-  const res = await api.createItem(fullPath, newType.value)
+
+  const res = await api.createItem(fullPath, newType.value, selectedRootIndex.value)
   if (res.success) {
     ElMessage.success('创建成功')
     newDialogVisible.value = false
@@ -538,34 +645,40 @@ async function handleDeleteItem() {
   try {
     await ElMessageBox.confirm(`确定删除 ${selectedPath.value}？此操作不可撤销！`, '确认删除', { type: 'warning' })
   } catch { return }
-  
-  // 保存父目录路径，用于删除后刷新
+
+  // 保存父目录路径和根目录索引，用于删除后刷新
   const deletedPath = selectedPath.value
+  const rootIdx = selectedRootIndex.value
   const parts = deletedPath.split('/')
   parts.pop()
   const parentPath = parts.join('/')
-  
-  const res = await api.deleteItem(deletedPath)
+
+  const res = await api.deleteItem(deletedPath, rootIdx)
   if (res.success) {
     ElMessage.success('删除成功')
     // Close tab if open
-    const idx = openTabs.value.findIndex(t => t.path === deletedPath)
+    const deletedTabKey = makeTabKey(rootIdx, deletedPath)
+    const idx = openTabs.value.findIndex(t => t.path === deletedPath && t.rootIndex === rootIdx)
     if (idx >= 0) {
       openTabs.value.splice(idx, 1)
-      if (activeTab.value === deletedPath) {
-        activeTab.value = openTabs.value.length ? openTabs.value[0].path : ''
+      if (activeTab.value === deletedTabKey) {
+        const firstTab = openTabs.value[0]
+        activeTab.value = firstTab ? makeTabKey(firstTab.rootIndex, firstTab.path) : ''
         if (activeTab.value) loadFileContent(activeTab.value)
         else { currentFileStat.value = null; editorContent.value = '' }
       }
     }
-    
+
     // 清空选中状态
     selectedPath.value = ''
     selectedNodeData.value = null
-    
+    selectedRootIndex.value = 0
+
     // 刷新父目录（如果父目录存在），否则刷新根目录
     if (treeRef.value) {
-      const parentNode = parentPath ? treeRef.value.getNode(parentPath) : treeRef.value.store.root
+      // 对于多根目录，需要使用 treeKey 来获取节点
+      const parentTreeKey = parentPath ? `${rootIdx}-${parentPath}` : `root-${rootIdx}`
+      const parentNode = treeRef.value.getNode(parentTreeKey)
       if (parentNode) {
         parentNode.loaded = false
         parentNode.expand()
@@ -581,11 +694,20 @@ async function handleDeleteItem() {
 }
 
 // Copy
+const sourceRootIndex = ref(0)  // 源文件所在的根目录索引
+
 function showCopyDialog() {
   operationType.value = 'copy'
   copyTarget.value = ''
+  copyTargetRootIndex.value = 0
+  sourceRootIndex.value = selectedRootIndex.value
   selectedItemName.value = selectedPath.value ? selectedPath.value.split('/').pop() : ''
-  targetTreeData.value = []
+  // 直接使用 rootPaths 作为目标树的根数据
+  targetTreeData.value = rootPaths.value.map(r => ({
+    ...r,
+    treeKey: `root-${r.rootIndex}`,
+    children: []
+  }))
   targetTreeKey.value++  // 强制重新渲染树组件
   copyDialogVisible.value = true
 }
@@ -594,9 +716,11 @@ async function handleCopy() {
   if (!copyTarget.value) { ElMessage.warning('请选择目标目录'); return }
 
   const targetPath = copyTarget.value + '/' + selectedItemName.value
+  const fromRoot = sourceRootIndex.value
+  const toRoot = copyTargetRootIndex.value
 
   // 检查目标是否已存在
-  const statRes = await api.getStat(targetPath)
+  const statRes = await api.getStat(targetPath, toRoot)
   if (statRes.success) {
     // 目标已存在，让用户选择
     try {
@@ -614,13 +738,13 @@ async function handleCopy() {
     }
 
     // 生成唯一路径
-    const uniquePath = await generateUniqueTargetPath(copyTarget.value, selectedItemName.value)
+    const uniquePath = await generateUniqueTargetPath(copyTarget.value, selectedItemName.value, toRoot)
     if (!uniquePath) {
       ElMessage.error('无法生成唯一文件名')
       return
     }
 
-    const res = await api.copyFile(selectedPath.value, uniquePath)
+    const res = await api.copyFile(selectedPath.value, uniquePath, fromRoot, toRoot)
     if (res.success) {
       ElMessage.success('复制成功（已重命名）')
       copyDialogVisible.value = false
@@ -629,7 +753,7 @@ async function handleCopy() {
       ElMessage.error('复制失败: ' + res.error)
     }
   } else {
-    const res = await api.copyFile(selectedPath.value, targetPath)
+    const res = await api.copyFile(selectedPath.value, targetPath, fromRoot, toRoot)
     if (res.success) {
       ElMessage.success('复制成功')
       copyDialogVisible.value = false
@@ -644,8 +768,15 @@ async function handleCopy() {
 function showMoveDialog() {
   operationType.value = 'move'
   moveTarget.value = ''
+  moveTargetRootIndex.value = 0
+  sourceRootIndex.value = selectedRootIndex.value
   selectedItemName.value = selectedPath.value ? selectedPath.value.split('/').pop() : ''
-  targetTreeData.value = []
+  // 直接使用 rootPaths 作为目标树的根数据
+  targetTreeData.value = rootPaths.value.map(r => ({
+    ...r,
+    treeKey: `root-${r.rootIndex}`,
+    children: []
+  }))
   targetTreeKey.value++  // 强制重新渲染树组件
   moveDialogVisible.value = true
 }
@@ -654,9 +785,11 @@ async function handleMove() {
   if (!moveTarget.value) { ElMessage.warning('请选择目标目录'); return }
 
   const targetPath = moveTarget.value + '/' + selectedItemName.value
+  const fromRoot = sourceRootIndex.value
+  const toRoot = moveTargetRootIndex.value
 
   // 检查目标是否已存在
-  const statRes = await api.getStat(targetPath)
+  const statRes = await api.getStat(targetPath, toRoot)
   if (statRes.success) {
     // 目标已存在，让用户选择
     try {
@@ -674,22 +807,22 @@ async function handleMove() {
     }
 
     // 生成唯一路径
-    const uniquePath = await generateUniqueTargetPath(moveTarget.value, selectedItemName.value)
+    const uniquePath = await generateUniqueTargetPath(moveTarget.value, selectedItemName.value, toRoot)
     if (!uniquePath) {
       ElMessage.error('无法生成唯一文件名')
       return
     }
 
-    const res = await api.moveFile(selectedPath.value, uniquePath)
+    const res = await api.moveFile(selectedPath.value, uniquePath, fromRoot, toRoot)
     if (res.success) {
       ElMessage.success('移动成功（已重命名）')
       moveDialogVisible.value = false
       // Update tab path
-      const tab = openTabs.value.find(t => t.path === selectedPath.value)
+      const tab = openTabs.value.find(t => t.path === selectedPath.value && t.rootIndex === fromRoot)
       if (tab) {
         const idx = openTabs.value.indexOf(tab)
-        openTabs.value[idx] = { path: uniquePath, name: uniquePath.split('/').pop() }
-        if (activeTab.value === selectedPath.value) activeTab.value = uniquePath
+        openTabs.value[idx] = { path: uniquePath, name: uniquePath.split('/').pop(), rootIndex: toRoot }
+        if (activeTab.value === makeTabKey(fromRoot, selectedPath.value)) activeTab.value = makeTabKey(toRoot, uniquePath)
       }
       selectedPath.value = ''
       await refreshTree()
@@ -697,16 +830,16 @@ async function handleMove() {
       ElMessage.error('移动失败: ' + res.error)
     }
   } else {
-    const res = await api.moveFile(selectedPath.value, targetPath)
+    const res = await api.moveFile(selectedPath.value, targetPath, fromRoot, toRoot)
     if (res.success) {
       ElMessage.success('移动成功')
       moveDialogVisible.value = false
       // Update tab path
-      const tab = openTabs.value.find(t => t.path === selectedPath.value)
+      const tab = openTabs.value.find(t => t.path === selectedPath.value && t.rootIndex === fromRoot)
       if (tab) {
         const idx = openTabs.value.indexOf(tab)
-        openTabs.value[idx] = { path: targetPath, name: targetPath.split('/').pop() }
-        if (activeTab.value === selectedPath.value) activeTab.value = targetPath
+        openTabs.value[idx] = { path: targetPath, name: targetPath.split('/').pop(), rootIndex: toRoot }
+        if (activeTab.value === makeTabKey(fromRoot, selectedPath.value)) activeTab.value = makeTabKey(toRoot, targetPath)
       }
       selectedPath.value = ''
       await refreshTree()
@@ -718,14 +851,27 @@ async function handleMove() {
 
 // 加载目标目录树节点（只显示目录）
 async function loadTargetNode(node, resolve) {
-  const path = node.level === 0 ? '' : node.data.path
-  const res = await api.getTree(path)
-  if (res.success) {
-    // 只返回目录，过滤掉文件
-    const dirs = res.data.filter(item => item.isDirectory)
-    resolve(dirs)
+  if (node.level === 0) {
+    // 第一层：直接使用已设置的 rootPaths 数据
+    resolve(targetTreeData.value)
   } else {
-    resolve([])
+    // 子目录
+    const path = node.data.path
+    const rootIndex = node.data.rootIndex || 0
+    const res = await api.getTree(path, rootIndex)
+    if (res.success) {
+      // 只返回目录，过滤掉文件
+      const dirs = res.data
+        .filter(item => item.isDirectory)
+        .map(item => ({
+          ...item,
+          rootIndex,
+          treeKey: `${rootIndex}-${item.path}`
+        }))
+      resolve(dirs)
+    } else {
+      resolve([])
+    }
   }
 }
 
@@ -734,16 +880,18 @@ function handleTargetSelect(data) {
   if (data.isDirectory) {
     if (operationType.value === 'copy') {
       copyTarget.value = data.path
+      copyTargetRootIndex.value = data.rootIndex || 0
     } else if (operationType.value === 'move') {
       moveTarget.value = data.path
+      moveTargetRootIndex.value = data.rootIndex || 0
     }
   }
 }
 
 // 生成唯一的目标路径
-async function generateUniqueTargetPath(targetDir, itemName) {
+async function generateUniqueTargetPath(targetDir, itemName, rootIndex = 0) {
   const basePath = targetDir + '/' + itemName
-  const res = await api.getStat(basePath)
+  const res = await api.getStat(basePath, rootIndex)
   if (!res.success) {
     return basePath
   }
@@ -756,7 +904,7 @@ async function generateUniqueTargetPath(targetDir, itemName) {
   let newPath = ''
   do {
     newPath = targetDir + '/' + baseName + '(' + counter + ')' + ext
-    const checkRes = await api.getStat(newPath)
+    const checkRes = await api.getStat(newPath, rootIndex)
     if (!checkRes.success) {
       return newPath
     }
@@ -768,7 +916,7 @@ async function generateUniqueTargetPath(targetDir, itemName) {
 
 // Permissions
 async function showPermDialog() {
-  const res = await api.getStat(selectedPath.value)
+  const res = await api.getStat(selectedPath.value, selectedRootIndex.value)
   if (res.success) {
     fileStat.value = res.data
     permInput.value = res.data.mode
@@ -781,7 +929,7 @@ async function handleSetPerm() {
     ElMessage.warning('请输入有效的八进制权限')
     return
   }
-  const res = await api.setPerm(selectedPath.value, permInput.value)
+  const res = await api.setPerm(selectedPath.value, permInput.value, selectedRootIndex.value)
   if (res.success) {
     ElMessage.success('权限已修改: ' + permInput.value)
     permDialogVisible.value = false
@@ -801,6 +949,95 @@ function onKeydown(e) {
   }
 }
 
+// 显示添加常驻目录对话框
+function showAddRootDialog() {
+  newRootPath.value = ''
+  addRootDialogVisible.value = true
+}
+
+// 处理添加常驻目录
+async function handleAddRoot() {
+  const path = newRootPath.value.trim()
+  if (!path) {
+    ElMessage.warning('请输入目录路径')
+    return
+  }
+
+  const res = await api.addRoot(path)
+  if (res.success) {
+    ElMessage.success('添加常驻目录成功')
+    addRootDialogVisible.value = false
+    // 直接添加新目录到 rootPaths，触发 tree 组件创建
+    const newIndex = rootPaths.value.length
+    rootPaths.value.push({
+      index: newIndex,
+      path: path,
+      name: path.split(/[\\/]/).pop() || path,
+      absPath: path,
+      isRoot: true,
+      treeKey: `root-${newIndex}`,
+      isDirectory: true,
+      isFile: false,
+    })
+    // 如果 tree 已存在，刷新它
+    if (treeRef.value) {
+      treeRef.value.store.root.loaded = false
+      treeRef.value.store.root.expand()
+    }
+  } else {
+    ElMessage.error('添加失败: ' + res.error)
+  }
+}
+
+// 处理移除常驻目录
+async function handleRemoveRoot(index) {
+  try {
+    await ElMessageBox.confirm(
+      '确定从文件树移除此目录？<br><strong style="color: #f56c6c;">注意：这不会删除实际目录，仅从文件树中移除。</strong>',
+      '确认移除',
+      {
+        confirmButtonText: '移除',
+        cancelButtonText: '取消',
+        type: 'warning',
+        dangerouslyUseHTMLString: true,
+      }
+    )
+  } catch {
+    return
+  }
+
+  const res = await api.removeRoot(index)
+  if (res.success) {
+    ElMessage.success('已移除常驻目录')
+    // 刷新树
+    if (treeRef.value) {
+      treeRef.value.store.root.loaded = false
+      treeRef.value.store.root.expand()
+    }
+  } else {
+    ElMessage.error('移除失败: ' + res.error)
+  }
+}
+
+// 显示常驻目录信息
+function showRootInfo(data) {
+  // 从 rootPaths 中找到对应的绝对路径
+  const rootInfo = rootPaths.value.find(r => r.rootIndex === data.rootIndex)
+  const absPath = rootInfo?.absPath || data.absPath || '未知路径'
+
+  ElMessageBox.alert(
+    `<div style="font-family: monospace; word-break: break-all; background: #1e1e1e; padding: 12px; border-radius: 4px; border: 1px solid #444;">
+      ${absPath}
+    </div>`,
+    `📁 ${data.name}`,
+    {
+      confirmButtonText: '确定',
+      dangerouslyUseHTMLString: true,
+      customClass: 'root-info-dialog',
+    }
+  )
+}
+
 onMounted(() => {
   // 懒加载模式下，el-tree 会自动调用 load 加载根节点
   // 不需要手动调用 refreshTree
@@ -812,6 +1049,58 @@ onMounted(() => {
 /* 全局样式 - 应用到整个页面 */
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #app { height: 100%; overflow: hidden; }
+
+/* 常驻目录信息对话框样式 - 全局覆盖 */
+.root-info-dialog {
+  background: #252526 !important;
+  border: 1px solid #444 !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4) !important;
+}
+.root-info-dialog .el-message-box__header {
+  background: #2d2d2d !important;
+  border-bottom: 1px solid #444 !important;
+  padding: 15px 20px !important;
+}
+.root-info-dialog .el-message-box__title {
+  color: #eee !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+}
+.root-info-dialog .el-message-box__content {
+  color: #ccc !important;
+  padding: 20px !important;
+  background: #252526 !important;
+}
+.root-info-dialog .el-message-box__btns {
+  padding: 12px 20px !important;
+  background: #2d2d2d !important;
+  border-top: 1px solid #444 !important;
+}
+.root-info-dialog .el-message-box__btns .el-button {
+  background: #333 !important;
+  border-color: #444 !important;
+  color: #ccc !important;
+}
+.root-info-dialog .el-message-box__btns .el-button:hover {
+  background: #444 !important;
+  border-color: #0969da !important;
+  color: #fff !important;
+}
+.root-info-dialog .el-message-box__btns .el-button--primary {
+  background: #007acc !important;
+  border-color: #007acc !important;
+  color: #fff !important;
+}
+.root-info-dialog .el-message-box__btns .el-button--primary:hover {
+  background: #0062a3 !important;
+  border-color: #0062a3 !important;
+}
+.root-info-dialog .el-message-box__close {
+  color: #999 !important;
+}
+.root-info-dialog .el-message-box__close:hover {
+  color: #fff !important;
+}
 </style>
 
 <style scoped>
@@ -877,11 +1166,48 @@ html, body, #app { height: 100%; overflow: hidden; }
   text-transform: uppercase;
   letter-spacing: 1px;
   border-bottom: 1px solid #333;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.add-root-btn {
+  width: 20px !important;
+  height: 20px !important;
+  padding: 0 !important;
+}
+
+.add-root-btn :deep(.el-icon) {
+  font-size: 12px;
 }
 
 .tree-scroll {
   flex: 1;
   padding: 4px 0;
+}
+
+.empty-roots {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  padding: 20px;
+}
+
+.empty-roots :deep(.el-empty__description) {
+  color: #999;
+  font-size: 14px;
+}
+
+.empty-hint {
+  text-align: center;
+  margin-top: 12px;
+}
+
+.empty-hint p {
+  color: #666;
+  font-size: 12px;
+  margin: 0;
 }
 
 .tree {
@@ -909,6 +1235,41 @@ html, body, #app { height: 100%; overflow: hidden; }
   display: flex;
   align-items: center;
   gap: 4px;
+  flex: 1;
+  padding-right: 8px;
+}
+
+.tree-node.is-root {
+  font-weight: 600;
+  color: #fff;
+}
+
+.remove-root-btn {
+  width: 18px !important;
+  height: 18px !important;
+  padding: 0 !important;
+  visibility: hidden;
+  margin-left: 4px;
+}
+
+.info-root-btn {
+  width: 18px !important;
+  height: 18px !important;
+  padding: 0 !important;
+  visibility: hidden;
+  margin-left: auto;
+}
+
+/* 当 tree 节点被悬停时显示按钮 */
+:deep(.el-tree-node__content:hover) .remove-root-btn,
+:deep(.el-tree-node__content.is-current) .remove-root-btn,
+:deep(.el-tree-node__content:hover) .info-root-btn,
+:deep(.el-tree-node__content.is-current) .info-root-btn {
+  visibility: visible;
+}
+
+.info-root-btn :deep(.el-icon) {
+  font-size: 10px;
 }
 
 .tree-label {
@@ -1072,8 +1433,9 @@ html, body, #app { height: 100%; overflow: hidden; }
   background: #37373d !important;
 }
 
-.dir-tree-container :deep(.el-tree-node.is-current > .el-tree-node__content) {
-  background: #37373d !important;
+.dir-tree-container .tree-node.is-root {
+  font-weight: 600;
+  color: #fff;
 }
 
 /* Override element-plus dark theme bits */
