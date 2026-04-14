@@ -228,7 +228,7 @@
       </el-form>
       <template #footer>
         <el-button @click="copyDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleCopy" :disabled="!copyTarget">确认复制</el-button>
+        <el-button type="primary" @click="handleCopy" :disabled="!hasSelectedTarget">确认复制</el-button>
       </template>
     </el-dialog>
 
@@ -270,7 +270,7 @@
       </el-form>
       <template #footer>
         <el-button @click="moveDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleMove" :disabled="!moveTarget">确认移动</el-button>
+        <el-button type="primary" @click="handleMove" :disabled="!hasSelectedTarget">确认移动</el-button>
       </template>
     </el-dialog>
 
@@ -446,14 +446,16 @@ const permInput = ref('')
 
 // 复制/移动目标路径显示
 const copyTargetDisplay = computed(() => {
-  if (!copyTarget.value) return '请点击选择目标目录'
+  if (!hasSelectedTarget.value) return '请点击选择目标目录'
   const rootName = rootPaths.value.find(r => r.rootIndex === copyTargetRootIndex.value)?.name || '未知'
-  return `目标: [${rootName}] ${copyTarget.value}/${selectedItemName.value}`
+  const displayPath = copyTarget.value || '(根目录)'
+  return `目标: [${rootName}] ${displayPath}/${selectedItemName.value}`
 })
 const moveTargetDisplay = computed(() => {
-  if (!moveTarget.value) return '请点击选择目标目录'
+  if (!hasSelectedTarget.value) return '请点击选择目标目录'
   const rootName = rootPaths.value.find(r => r.rootIndex === moveTargetRootIndex.value)?.name || '未知'
-  return `目标: [${rootName}] ${moveTarget.value}/${selectedItemName.value}`
+  const displayPath = moveTarget.value || '(根目录)'
+  return `目标: [${rootName}] ${displayPath}/${selectedItemName.value}`
 })
 
 // 目标目录树（用于复制/移动）
@@ -750,11 +752,13 @@ async function handleDeleteItem() {
 
 // Copy
 const sourceRootIndex = ref(0)  // 源文件所在的根目录索引
+const hasSelectedTarget = ref(false)  // 是否已选择目标目录
 
 function showCopyDialog() {
   operationType.value = 'copy'
   copyTarget.value = ''
   copyTargetRootIndex.value = 0
+  hasSelectedTarget.value = false
   sourceRootIndex.value = selectedRootIndex.value
   selectedItemName.value = selectedPath.value ? selectedPath.value.split('/').pop() : ''
   // 直接使用 rootPaths 作为目标树的根数据
@@ -768,9 +772,9 @@ function showCopyDialog() {
 }
 
 async function handleCopy() {
-  if (!copyTarget.value) { ElMessage.warning('请选择目标目录'); return }
+  if (!hasSelectedTarget.value) { ElMessage.warning('请选择目标目录'); return }
 
-  const targetPath = copyTarget.value + '/' + selectedItemName.value
+  const targetPath = copyTarget.value ? copyTarget.value + '/' + selectedItemName.value : selectedItemName.value
   const fromRoot = sourceRootIndex.value
   const toRoot = copyTargetRootIndex.value
 
@@ -824,6 +828,7 @@ function showMoveDialog() {
   operationType.value = 'move'
   moveTarget.value = ''
   moveTargetRootIndex.value = 0
+  hasSelectedTarget.value = false
   sourceRootIndex.value = selectedRootIndex.value
   selectedItemName.value = selectedPath.value ? selectedPath.value.split('/').pop() : ''
   // 直接使用 rootPaths 作为目标树的根数据
@@ -837,9 +842,9 @@ function showMoveDialog() {
 }
 
 async function handleMove() {
-  if (!moveTarget.value) { ElMessage.warning('请选择目标目录'); return }
+  if (!hasSelectedTarget.value) { ElMessage.warning('请选择目标目录'); return }
 
-  const targetPath = moveTarget.value + '/' + selectedItemName.value
+  const targetPath = moveTarget.value ? moveTarget.value + '/' + selectedItemName.value : selectedItemName.value
   const fromRoot = sourceRootIndex.value
   const toRoot = moveTargetRootIndex.value
 
@@ -936,16 +941,18 @@ function handleTargetSelect(data) {
     if (operationType.value === 'copy') {
       copyTarget.value = data.path
       copyTargetRootIndex.value = data.rootIndex || 0
+      hasSelectedTarget.value = true
     } else if (operationType.value === 'move') {
       moveTarget.value = data.path
       moveTargetRootIndex.value = data.rootIndex || 0
+      hasSelectedTarget.value = true
     }
   }
 }
 
 // 生成唯一的目标路径
 async function generateUniqueTargetPath(targetDir, itemName, rootIndex = 0) {
-  const basePath = targetDir + '/' + itemName
+  const basePath = targetDir ? targetDir + '/' + itemName : itemName
   const res = await api.getStat(basePath, rootIndex)
   if (!res.success) {
     return basePath
@@ -958,7 +965,7 @@ async function generateUniqueTargetPath(targetDir, itemName, rootIndex = 0) {
   let counter = 1
   let newPath = ''
   do {
-    newPath = targetDir + '/' + baseName + '(' + counter + ')' + ext
+    newPath = targetDir ? targetDir + '/' + baseName + '(' + counter + ')' + ext : baseName + '(' + counter + ')' + ext
     const checkRes = await api.getStat(newPath, rootIndex)
     if (!checkRes.success) {
       return newPath
