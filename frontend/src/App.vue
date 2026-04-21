@@ -871,9 +871,9 @@ async function handleDeleteItem() {
   // 保存父目录路径和根目录索引，用于删除后刷新
   const deletedPath = selectedPath.value
   const rootIdx = selectedRootIndex.value
-  const parts = deletedPath.split('/')
-  parts.pop()
-  const parentPath = parts.join('/')
+  const deletedTreeKey = getTreeKeyForPath(deletedPath, rootIdx)
+  const parentPath = getParentPath(deletedPath)
+  const parentTreeKey = getTreeKeyForPath(parentPath, rootIdx)
 
   const res = await api.deleteItem(deletedPath, rootIdx)
   if (res.success) {
@@ -897,11 +897,10 @@ async function handleDeleteItem() {
     selectedPath.value = ''
     selectedNodeData.value = null
     selectedRootIndex.value = 0
+    removeExpandedKeyBranch(deletedTreeKey)
 
     // 刷新父目录（如果父目录存在），否则刷新根目录
     if (treeRef.value) {
-      // 对于多根目录，需要使用 treeKey 来获取节点
-      const parentTreeKey = parentPath ? `${rootIdx}-${parentPath}` : `root-${rootIdx}`
       const parentNode = treeRef.value.getNode(parentTreeKey)
       if (parentNode) {
         await refreshNodeByKey(parentTreeKey)
