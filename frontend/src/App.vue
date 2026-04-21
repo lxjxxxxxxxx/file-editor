@@ -357,7 +357,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, watch, nextTick, computed } from 'vue'
+import { ref, onMounted, watch, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MonacoEditor from './MonacoEditor.vue'
 import {
@@ -395,7 +395,6 @@ const openTabs = ref([])
 const activeTab = ref('')
 const editorContent = ref('')
 const editorKey = ref(0)
-const isModified = ref(false)
 const saving = ref(false)
 const currentFileStat = ref(null)
 const cursorPos = ref(null)
@@ -416,6 +415,39 @@ function parseActiveTab(tabKey) {
 function makeTabKey(rootIndex, path) {
   return `${rootIndex}-${path}`
 }
+
+function createTabRecord(filePath, fileName, rootIndex) {
+  return {
+    path: filePath,
+    name: fileName,
+    rootIndex,
+    content: '',
+    savedContent: '',
+    isModified: false,
+    isLoaded: false,
+    stat: null,
+  }
+}
+
+function getTabRecord(tabKey) {
+  const { rootIndex, path } = parseActiveTab(tabKey)
+  return openTabs.value.find(tab => tab.path === path && tab.rootIndex === rootIndex) || null
+}
+
+function syncEditorWithTab(tab) {
+  if (!tab) {
+    editorContent.value = ''
+    currentFileStat.value = null
+    return
+  }
+  editorContent.value = tab.content
+  currentFileStat.value = tab.stat
+}
+
+const isModified = computed(() => {
+  const tab = getTabRecord(activeTab.value)
+  return !!tab?.isModified
+})
 
 const editorOptions = {
   automaticLayout: true,
@@ -535,22 +567,26 @@ const fileLoadingPath = ref('')
 async function openFile(filePath, fileName, rootIndex = 0) {
   const tabKey = makeTabKey(rootIndex, filePath)
   // Check if already open
-  const existing = openTabs.value.find(t => t.path === filePath && t.rootIndex === rootIndex)
+  const existing = getTabRecord(tabKey)
   if (existing) {
     activeTab.value = tabKey
     return
   }
-  // Open in tab - watch(activeTab) 会自动调用 loadFileContent
-  openTabs.value.push({ path: filePath, name: fileName, rootIndex })
+  openTabs.value.push(createTabRecord(filePath, fileName, rootIndex))
   activeTab.value = tabKey
 }
 
 async function loadFileContent(tabKey) {
+  const tab = getTabRecord(tabKey)
+  if (!tab) return
+
+  if (tab.isLoaded) {
+    syncEditorWithTab(tab)
+    return
+  }
+
   const { rootIndex, path: filePath } = parseActiveTab(tabKey)
   if (!filePath) return
-  // 获取当前 tab
-  const tab = openTabs.value.find(t => t.path === filePath && t.rootIndex === rootIndex)
-  if (!tab) return
 
   fileLoading.value = true
   fileLoadingPath.value = filePath
@@ -562,17 +598,24 @@ async function loadFileContent(tabKey) {
   fileLoadingPath.value = ''
 
   if (res.success) {
-    editorContent.value = res.data.content
+    tab.content = res.data.content
+    tab.savedContent = res.data.content
+    tab.isModified = false
+    tab.isLoaded = true
     editorKey.value++
-    isModified.value = false
-    currentFileStat.value = res.data
+    syncEditorWithTab(tab)
 
     // 显示加载成功提示，包括文件大小
     const sizeStr = formatSize(res.data.size || 0)
     ElMessage.success({ message: `加载成功 (${sizeStr})`, duration: 2000 })
 
     await api.getStat(filePath, rootIndex).then(r => {
-      if (r.success) currentFileStat.value = r.data
+      if (r.success) {
+        tab.stat = r.data
+        if (activeTab.value === tabKey) {
+          currentFileStat.value = r.data
+        }
+      }
     })
   } else {
     ElMessage.error('读取失败: ' + res.error)
@@ -585,7 +628,7 @@ function onTabClick(tab) {
 
 async function onTabRemove(tabKey) {
   const { rootIndex, path: filePath } = parseActiveTab(tabKey)
-  const tab = openTabs.value.find(t => t.path === filePath && t.rootIndex === rootIndex)
+  const tab = getTabRecord(tabKey)
   if (tab) {
     if (isModified.value && activeTab.value === tabKey) {
       try {
@@ -608,23 +651,31 @@ async function onTabRemove(tabKey) {
 watch(activeTab, async (newVal) => {
   if (newVal) {
     await loadFileContent(newVal)
+  } else {
+    syncEditorWithTab(null)
   }
 })
 
 function onCodeChange(newCode) {
+  const tab = getTabRecord(activeTab.value)
+  if (!tab) return
+  tab.content = newCode
+  tab.isModified = newCode !== tab.savedContent
   editorContent.value = newCode
-  isModified.value = true
 }
 
 async function handleSave() {
   if (!activeTab.value) return
   const { rootIndex, path: filePath } = parseActiveTab(activeTab.value)
+  const tab = getTabRecord(activeTab.value)
+  if (!tab) return
   saving.value = true
   try {
-    const res = await api.saveFile(filePath, editorContent.value, rootIndex)
+    const res = await api.saveFile(filePath, tab.content, rootIndex)
     if (res.success) {
       ElMessage.success('保存成功')
-      isModified.value = false
+      tab.savedContent = tab.content
+      tab.isModified = false
     } else {
       ElMessage.error('保存失败: ' + res.error)
     }
