@@ -60,13 +60,14 @@
           >
             <template #default="{ data }">
               <span class="tree-node" :class="{ 'is-root': data.isRoot }">
-                <el-icon v-if="isTreeNodeRefreshing(data.treeKey)" class="tree-loading-icon"><Loading /></el-icon>
+                <el-icon v-if="data.isRefreshing" class="tree-loading-icon"><Loading /></el-icon>
                 <el-icon v-else-if="data.isDirectory"><Folder /></el-icon>
                 <el-icon v-else><Document /></el-icon>
                 <span class="tree-label">
                   <span v-if="data.alias" class="root-alias" :title="data.name">{{ data.alias }}</span>
                   <span v-else>{{ data.name }}</span>
                 </span>
+                <span v-if="data.isRefreshing" class="tree-loading-text">刷新中...</span>
                 <!-- 根目录显示操作按钮 -->
                 <el-button
                   v-if="data.isRoot"
@@ -571,18 +572,19 @@ function addExpandedKey(treeKey) {
   }
 }
 
-function addRefreshingKey(treeKey) {
-  if (!refreshingTreeKeys.value.includes(treeKey)) {
-    refreshingTreeKeys.value.push(treeKey)
+function setNodeRefreshing(treeKey, refreshing) {
+  if (refreshing) {
+    if (!refreshingTreeKeys.value.includes(treeKey)) {
+      refreshingTreeKeys.value.push(treeKey)
+    }
+  } else {
+    refreshingTreeKeys.value = refreshingTreeKeys.value.filter(key => key !== treeKey)
   }
-}
 
-function removeRefreshingKey(treeKey) {
-  refreshingTreeKeys.value = refreshingTreeKeys.value.filter(key => key !== treeKey)
-}
-
-function isTreeNodeRefreshing(treeKey) {
-  return refreshingTreeKeys.value.includes(treeKey)
+  const node = treeRef.value?.getNode(treeKey)
+  if (node?.data) {
+    node.data.isRefreshing = refreshing
+  }
 }
 
 function removeExpandedKeyBranch(treeKey) {
@@ -619,10 +621,10 @@ async function refreshNodeByKey(treeKey) {
   const descendantKeys = expandedTreeKeys.value.filter(key => key !== treeKey && isTreeKeyInBranch(key, treeKey))
   const wasExpanded = node.expanded
 
-  addRefreshingKey(treeKey)
+  setNodeRefreshing(treeKey, true)
   node.loaded = false
   if (!wasExpanded) {
-    removeRefreshingKey(treeKey)
+    setNodeRefreshing(treeKey, false)
     return
   }
 
@@ -630,7 +632,7 @@ async function refreshNodeByKey(treeKey) {
     node.loadData(() => {
       node.expanded = true
       restoreExpandedNodes(descendantKeys)
-      removeRefreshingKey(treeKey)
+      setNodeRefreshing(treeKey, false)
       resolve()
     })
   })
@@ -648,13 +650,13 @@ async function refreshRootTree() {
 
   const expandedKeys = [...expandedTreeKeys.value]
   const rootKeys = rootPaths.value.map(root => getTreeKeyForPath('', root.rootIndex))
-  rootKeys.forEach(addRefreshingKey)
+  rootKeys.forEach(treeKey => setNodeRefreshing(treeKey, true))
   treeRef.value.store.root.loaded = false
 
   await new Promise((resolve) => {
     treeRef.value.store.root.expand(() => {
       restoreExpandedNodes(expandedKeys)
-      rootKeys.forEach(removeRefreshingKey)
+      rootKeys.forEach(treeKey => setNodeRefreshing(treeKey, false))
       resolve()
     })
   })
@@ -1558,6 +1560,13 @@ html, body, #app { height: 100%; overflow: hidden; }
 .tree-loading-icon {
   color: #409eff;
   animation: rotate 1s linear infinite;
+}
+
+.tree-loading-text {
+  margin-left: 6px;
+  font-size: 12px;
+  color: #409eff;
+  white-space: nowrap;
 }
 
 .tree-label {
