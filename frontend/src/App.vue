@@ -60,12 +60,14 @@
           >
             <template #default="{ data }">
               <span class="tree-node" :class="{ 'is-root': data.isRoot }">
-                <el-icon v-if="data.isDirectory"><Folder /></el-icon>
+                <el-icon v-if="data.isRefreshing" class="tree-loading-icon"><Loading /></el-icon>
+                <el-icon v-else-if="data.isDirectory"><Folder /></el-icon>
                 <el-icon v-else><Document /></el-icon>
                 <span class="tree-label">
                   <span v-if="data.alias" class="root-alias" :title="data.name">{{ data.alias }}</span>
                   <span v-else>{{ data.name }}</span>
                 </span>
+                <span v-if="data.isRefreshing" class="tree-loading-text">刷新中...</span>
                 <!-- 根目录显示操作按钮 -->
                 <el-button
                   v-if="data.isRoot"
@@ -360,7 +362,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch, computed, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MonacoEditor from './MonacoEditor.vue'
 import {
@@ -381,6 +383,7 @@ const selectedPath = ref('')
 const selectedNodeData = ref(null)
 const selectedRootIndex = ref(0)  // 当前选中的根目录索引
 const expandedTreeKeys = ref([])
+const refreshingTreeKeys = ref([])
 
 // 常驻目录管理
 const rootPaths = ref([])  // 常驻目录列表
@@ -569,9 +572,18 @@ function addExpandedKey(treeKey) {
   }
 }
 
-function setNodeLoading(node, loading) {
-  if (node) {
-    node.loading = loading
+function setNodeRefreshing(treeKey, refreshing) {
+  if (refreshing) {
+    if (!refreshingTreeKeys.value.includes(treeKey)) {
+      refreshingTreeKeys.value.push(treeKey)
+    }
+  } else {
+    refreshingTreeKeys.value = refreshingTreeKeys.value.filter(key => key !== treeKey)
+  }
+
+  const node = treeRef.value?.getNode(treeKey)
+  if (node?.data) {
+    node.data.isRefreshing = refreshing
   }
 }
 
@@ -609,18 +621,18 @@ async function refreshNodeByKey(treeKey) {
   const descendantKeys = expandedTreeKeys.value.filter(key => key !== treeKey && isTreeKeyInBranch(key, treeKey))
   const wasExpanded = node.expanded
 
-  setNodeLoading(node, true)
+  setNodeRefreshing(treeKey, true)
   node.loaded = false
   if (!wasExpanded) {
-    setNodeLoading(node, false)
+    setNodeRefreshing(treeKey, false)
     return
   }
 
-  await nextTick()
   await new Promise((resolve) => {
     node.loadData(() => {
       node.expanded = true
       restoreExpandedNodes(descendantKeys)
+      setNodeRefreshing(treeKey, false)
       resolve()
     })
   })
@@ -637,16 +649,14 @@ async function refreshRootTree() {
   if (!treeRef.value) return
 
   const expandedKeys = [...expandedTreeKeys.value]
-  const rootNodes = rootPaths.value
-    .map(root => treeRef.value.getNode(getTreeKeyForPath('', root.rootIndex)))
-    .filter(Boolean)
-  rootNodes.forEach(node => setNodeLoading(node, true))
+  const rootKeys = rootPaths.value.map(root => getTreeKeyForPath('', root.rootIndex))
+  rootKeys.forEach(treeKey => setNodeRefreshing(treeKey, true))
   treeRef.value.store.root.loaded = false
 
-  await nextTick()
   await new Promise((resolve) => {
     treeRef.value.store.root.expand(() => {
       restoreExpandedNodes(expandedKeys)
+      rootKeys.forEach(treeKey => setNodeRefreshing(treeKey, false))
       resolve()
     })
   })
