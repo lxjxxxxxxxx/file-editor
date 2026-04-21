@@ -778,8 +778,10 @@ async function handleDeleteItem() {
       if (activeTab.value === deletedTabKey) {
         const firstTab = openTabs.value[0]
         activeTab.value = firstTab ? makeTabKey(firstTab.rootIndex, firstTab.path) : ''
-        if (activeTab.value) loadFileContent(activeTab.value)
-        else { currentFileStat.value = null; editorContent.value = '' }
+        if (!activeTab.value) {
+          currentFileStat.value = null
+          editorContent.value = ''
+        }
       }
     }
 
