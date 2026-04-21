@@ -135,6 +135,7 @@
               :path="parseActiveTab(activeTab).path"
               :code="editorContent"
               @change="onCodeChange"
+              @cursor-change="onCursorChange"
               :options="editorOptions"
               height="100%"
               ref="monacoRef"
@@ -653,6 +654,7 @@ watch(activeTab, async (newVal) => {
     await loadFileContent(newVal)
   } else {
     syncEditorWithTab(null)
+    cursorPos.value = null
   }
 })
 
@@ -662,6 +664,10 @@ function onCodeChange(newCode) {
   tab.content = newCode
   tab.isModified = newCode !== tab.savedContent
   editorContent.value = newCode
+}
+
+function onCursorChange(position) {
+  cursorPos.value = position
 }
 
 async function handleSave() {
