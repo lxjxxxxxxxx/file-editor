@@ -2,3 +2,5 @@ node_modules/
 dist/
 *.log
 .claude/
+.codex
+FRONTEND_BUGS.md
