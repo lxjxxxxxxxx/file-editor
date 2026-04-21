@@ -358,7 +358,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch, computed } from 'vue'
+import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MonacoEditor from './MonacoEditor.vue'
 import {
@@ -1178,6 +1178,10 @@ onMounted(() => {
   // 懒加载模式下，el-tree 会自动调用 load 加载根节点
   // 不需要手动调用 refreshTree
   window.addEventListener('keydown', onKeydown)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown)
 })
 </script>
 
