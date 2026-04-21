@@ -60,7 +60,8 @@
           >
             <template #default="{ data }">
               <span class="tree-node" :class="{ 'is-root': data.isRoot }">
-                <el-icon v-if="data.isDirectory"><Folder /></el-icon>
+                <el-icon v-if="isTreeNodeRefreshing(data.treeKey)" class="tree-loading-icon"><Loading /></el-icon>
+                <el-icon v-else-if="data.isDirectory"><Folder /></el-icon>
                 <el-icon v-else><Document /></el-icon>
                 <span class="tree-label">
                   <span v-if="data.alias" class="root-alias" :title="data.name">{{ data.alias }}</span>
@@ -381,6 +382,7 @@ const selectedPath = ref('')
 const selectedNodeData = ref(null)
 const selectedRootIndex = ref(0)  // 当前选中的根目录索引
 const expandedTreeKeys = ref([])
+const refreshingTreeKeys = ref([])
 
 // 常驻目录管理
 const rootPaths = ref([])  // 常驻目录列表
@@ -569,6 +571,20 @@ function addExpandedKey(treeKey) {
   }
 }
 
+function addRefreshingKey(treeKey) {
+  if (!refreshingTreeKeys.value.includes(treeKey)) {
+    refreshingTreeKeys.value.push(treeKey)
+  }
+}
+
+function removeRefreshingKey(treeKey) {
+  refreshingTreeKeys.value = refreshingTreeKeys.value.filter(key => key !== treeKey)
+}
+
+function isTreeNodeRefreshing(treeKey) {
+  return refreshingTreeKeys.value.includes(treeKey)
+}
+
 function removeExpandedKeyBranch(treeKey) {
   expandedTreeKeys.value = expandedTreeKeys.value.filter(key => !isTreeKeyInBranch(key, treeKey))
 }
@@ -603,13 +619,18 @@ async function refreshNodeByKey(treeKey) {
   const descendantKeys = expandedTreeKeys.value.filter(key => key !== treeKey && isTreeKeyInBranch(key, treeKey))
   const wasExpanded = node.expanded
 
+  addRefreshingKey(treeKey)
   node.loaded = false
-  if (!wasExpanded) return
+  if (!wasExpanded) {
+    removeRefreshingKey(treeKey)
+    return
+  }
 
   await new Promise((resolve) => {
     node.loadData(() => {
       node.expanded = true
       restoreExpandedNodes(descendantKeys)
+      removeRefreshingKey(treeKey)
       resolve()
     })
   })
@@ -626,11 +647,14 @@ async function refreshRootTree() {
   if (!treeRef.value) return
 
   const expandedKeys = [...expandedTreeKeys.value]
+  const rootKeys = rootPaths.value.map(root => getTreeKeyForPath('', root.rootIndex))
+  rootKeys.forEach(addRefreshingKey)
   treeRef.value.store.root.loaded = false
 
   await new Promise((resolve) => {
     treeRef.value.store.root.expand(() => {
       restoreExpandedNodes(expandedKeys)
+      rootKeys.forEach(removeRefreshingKey)
       resolve()
     })
   })
@@ -1529,6 +1553,11 @@ html, body, #app { height: 100%; overflow: hidden; }
 
 .edit-alias-btn :deep(.el-icon) {
   font-size: 10px;
+}
+
+.tree-loading-icon {
+  color: #409eff;
+  animation: rotate 1s linear infinite;
 }
 
 .tree-label {
