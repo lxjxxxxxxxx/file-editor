@@ -630,7 +630,7 @@ async function onTabRemove(tabKey) {
   const { rootIndex, path: filePath } = parseActiveTab(tabKey)
   const tab = getTabRecord(tabKey)
   if (tab) {
-    if (isModified.value && activeTab.value === tabKey) {
+    if (tab.isModified) {
       try {
         await ElMessageBox.confirm(`${tab.name} 有未保存的更改，确定关闭？`, '警告', { type: 'warning' })
       } catch { return }
