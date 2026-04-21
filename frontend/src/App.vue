@@ -53,6 +53,8 @@
             :expand-on-click-node="false"
             @node-click="handleNodeClick"
             @current-change="handleCurrentChange"
+            @node-expand="handleNodeExpand"
+            @node-collapse="handleNodeCollapse"
             class="tree"
             ref="treeRef"
           >
@@ -378,6 +380,7 @@ const treeRef = ref(null)
 const selectedPath = ref('')
 const selectedNodeData = ref(null)
 const selectedRootIndex = ref(0)  // 当前选中的根目录索引
+const expandedTreeKeys = ref([])
 
 // 常驻目录管理
 const rootPaths = ref([])  // 常驻目录列表
@@ -540,13 +543,118 @@ async function loadNode(node, resolve) {
   }
 }
 
-// 刷新当前选中的目录
-async function refreshTree() {
+function getTreeKeyForPath(path, rootIndex) {
+  return path ? `${rootIndex}-${path}` : `root-${rootIndex}`
+}
+
+function getParentPath(path) {
+  if (!path) return ''
+  const parts = path.split('/')
+  parts.pop()
+  return parts.join('/')
+}
+
+function isTreeKeyInBranch(treeKey, branchKey) {
+  if (treeKey === branchKey) return true
+  if (branchKey.startsWith('root-')) {
+    const rootIndex = branchKey.slice(5)
+    return treeKey.startsWith(`${rootIndex}-`)
+  }
+  return treeKey.startsWith(`${branchKey}/`)
+}
+
+function addExpandedKey(treeKey) {
+  if (!expandedTreeKeys.value.includes(treeKey)) {
+    expandedTreeKeys.value.push(treeKey)
+  }
+}
+
+function removeExpandedKeyBranch(treeKey) {
+  expandedTreeKeys.value = expandedTreeKeys.value.filter(key => !isTreeKeyInBranch(key, treeKey))
+}
+
+function sortTreeKeysByDepth(treeKeys) {
+  return [...treeKeys].sort((a, b) => a.split('/').length - b.split('/').length)
+}
+
+function restoreExpandedNodes(treeKeys) {
+  sortTreeKeysByDepth(treeKeys).forEach((treeKey) => {
+    const node = treeRef.value?.getNode(treeKey)
+    if (node && !node.expanded) {
+      node.expand()
+    }
+  })
+}
+
+function handleNodeExpand(data) {
+  addExpandedKey(data.treeKey)
+}
+
+function handleNodeCollapse(data) {
+  removeExpandedKeyBranch(data.treeKey)
+}
+
+async function refreshNodeByKey(treeKey) {
   if (!treeRef.value) return
 
-  // 多根目录模式下，直接刷新根节点
+  const node = treeRef.value.getNode(treeKey)
+  if (!node) return
+
+  const descendantKeys = expandedTreeKeys.value.filter(key => key !== treeKey && isTreeKeyInBranch(key, treeKey))
+  const wasExpanded = node.expanded
+
+  node.loaded = false
+  if (!wasExpanded) return
+
+  await new Promise((resolve) => {
+    node.loadData(() => {
+      node.expanded = true
+      restoreExpandedNodes(descendantKeys)
+      resolve()
+    })
+  })
+}
+
+async function refreshNodeKeys(treeKeys) {
+  const uniqueTreeKeys = [...new Set(treeKeys.filter(Boolean))]
+  for (const treeKey of uniqueTreeKeys) {
+    await refreshNodeByKey(treeKey)
+  }
+}
+
+async function refreshRootTree() {
+  if (!treeRef.value) return
+
+  const expandedKeys = [...expandedTreeKeys.value]
   treeRef.value.store.root.loaded = false
-  treeRef.value.store.root.expand()
+
+  await new Promise((resolve) => {
+    treeRef.value.store.root.expand(() => {
+      restoreExpandedNodes(expandedKeys)
+      resolve()
+    })
+  })
+}
+
+async function refreshTree(treeKey = null) {
+  if (!treeRef.value) return
+
+  if (treeKey) {
+    await refreshNodeByKey(treeKey)
+    return
+  }
+
+  if (selectedNodeData.value?.isDirectory) {
+    await refreshNodeByKey(getTreeKeyForPath(selectedPath.value, selectedRootIndex.value))
+    return
+  }
+
+  if (selectedNodeData.value?.isFile) {
+    await refreshNodeByKey(getTreeKeyForPath(getParentPath(selectedPath.value), selectedRootIndex.value))
+    return
+  }
+
+  await refreshRootTree()
 }
 
 function handleCurrentChange(data) {
@@ -747,7 +855,7 @@ async function handleCreate() {
   if (res.success) {
     ElMessage.success('创建成功')
     newDialogVisible.value = false
-    await refreshTree()
+    await refreshTree(getTreeKeyForPath(newParentPath.value === '(根目录)' ? '' : newParentPath.value, selectedRootIndex.value))
   } else {
     ElMessage.error('创建失败: ' + res.error)
   }
@@ -796,12 +904,10 @@ async function handleDeleteItem() {
       const parentTreeKey = parentPath ? `${rootIdx}-${parentPath}` : `root-${rootIdx}`
       const parentNode = treeRef.value.getNode(parentTreeKey)
       if (parentNode) {
-        parentNode.loaded = false
-        parentNode.expand()
+        await refreshNodeByKey(parentTreeKey)
       } else {
         // 父目录也不存在，刷新根目录
-        treeRef.value.store.root.loaded = false
-        treeRef.value.store.root.expand()
+        await refreshRootTree()
       }
     }
   } else {
@@ -866,7 +972,7 @@ async function handleCopy() {
     if (res.success) {
       ElMessage.success('复制成功（已重命名）')
       copyDialogVisible.value = false
-      await refreshTree()
+      await refreshNodeByKey(getTreeKeyForPath(copyTarget.value, toRoot))
     } else {
       ElMessage.error('复制失败: ' + res.error)
     }
@@ -875,7 +981,7 @@ async function handleCopy() {
     if (res.success) {
       ElMessage.success('复制成功')
       copyDialogVisible.value = false
-      await refreshTree()
+      await refreshNodeByKey(getTreeKeyForPath(copyTarget.value, toRoot))
     } else {
       ElMessage.error('复制失败: ' + res.error)
     }
@@ -903,6 +1009,7 @@ function showMoveDialog() {
 async function handleMove() {
   if (!hasSelectedTarget.value) { ElMessage.warning('请选择目标目录'); return }
 
+  const sourcePath = selectedPath.value
   const targetPath = moveTarget.value ? moveTarget.value + '/' + selectedItemName.value : selectedItemName.value
   const fromRoot = sourceRootIndex.value
   const toRoot = moveTargetRootIndex.value
@@ -932,36 +1039,42 @@ async function handleMove() {
       return
     }
 
-    const res = await api.moveFile(selectedPath.value, uniquePath, fromRoot, toRoot)
+    const res = await api.moveFile(sourcePath, uniquePath, fromRoot, toRoot)
     if (res.success) {
       ElMessage.success('移动成功（已重命名）')
       moveDialogVisible.value = false
       // Update tab path
-      const tab = openTabs.value.find(t => t.path === selectedPath.value && t.rootIndex === fromRoot)
+      const tab = openTabs.value.find(t => t.path === sourcePath && t.rootIndex === fromRoot)
       if (tab) {
         const idx = openTabs.value.indexOf(tab)
         openTabs.value[idx] = { path: uniquePath, name: uniquePath.split('/').pop(), rootIndex: toRoot }
-        if (activeTab.value === makeTabKey(fromRoot, selectedPath.value)) activeTab.value = makeTabKey(toRoot, uniquePath)
+        if (activeTab.value === makeTabKey(fromRoot, sourcePath)) activeTab.value = makeTabKey(toRoot, uniquePath)
       }
       selectedPath.value = ''
-      await refreshTree()
+      await refreshNodeKeys([
+        getTreeKeyForPath(getParentPath(sourcePath), fromRoot),
+        getTreeKeyForPath(moveTarget.value, toRoot),
+      ])
     } else {
       ElMessage.error('移动失败: ' + res.error)
     }
   } else {
-    const res = await api.moveFile(selectedPath.value, targetPath, fromRoot, toRoot)
+    const res = await api.moveFile(sourcePath, targetPath, fromRoot, toRoot)
     if (res.success) {
       ElMessage.success('移动成功')
       moveDialogVisible.value = false
       // Update tab path
-      const tab = openTabs.value.find(t => t.path === selectedPath.value && t.rootIndex === fromRoot)
+      const tab = openTabs.value.find(t => t.path === sourcePath && t.rootIndex === fromRoot)
       if (tab) {
         const idx = openTabs.value.indexOf(tab)
         openTabs.value[idx] = { path: targetPath, name: targetPath.split('/').pop(), rootIndex: toRoot }
-        if (activeTab.value === makeTabKey(fromRoot, selectedPath.value)) activeTab.value = makeTabKey(toRoot, targetPath)
+        if (activeTab.value === makeTabKey(fromRoot, sourcePath)) activeTab.value = makeTabKey(toRoot, targetPath)
       }
       selectedPath.value = ''
-      await refreshTree()
+      await refreshNodeKeys([
+        getTreeKeyForPath(getParentPath(sourcePath), fromRoot),
+        getTreeKeyForPath(moveTarget.value, toRoot),
+      ])
     } else {
       ElMessage.error('移动失败: ' + res.error)
     }
@@ -1093,10 +1206,7 @@ async function handleAddRoot() {
     newRootPath.value = ''
     newRootAlias.value = ''
     // 刷新树
-    if (treeRef.value) {
-      treeRef.value.store.root.loaded = false
-      treeRef.value.store.root.expand()
-    }
+    await refreshRootTree()
   } else {
     ElMessage.error('添加失败: ' + res.error)
   }
@@ -1123,10 +1233,7 @@ async function handleRemoveRoot(index) {
   if (res.success) {
     ElMessage.success('已移除常驻目录')
     // 刷新树
-    if (treeRef.value) {
-      treeRef.value.store.root.loaded = false
-      treeRef.value.store.root.expand()
-    }
+    await refreshRootTree()
   } else {
     ElMessage.error('移除失败: ' + res.error)
   }
@@ -1148,10 +1255,7 @@ async function handleEditAlias() {
     ElMessage.success('别名修改成功')
     editAliasDialogVisible.value = false
     // 刷新树
-    if (treeRef.value) {
-      treeRef.value.store.root.loaded = false
-      treeRef.value.store.root.expand()
-    }
+    await refreshRootTree()
   } else {
     ElMessage.error('修改失败: ' + res.error)
   }
