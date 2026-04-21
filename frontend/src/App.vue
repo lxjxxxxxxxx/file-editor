@@ -381,6 +381,7 @@ const selectedPath = ref('')
 const selectedNodeData = ref(null)
 const selectedRootIndex = ref(0)  // 当前选中的根目录索引
 const expandedTreeKeys = ref([])
+const pendingTreeRefreshKeys = ref([])
 
 // 常驻目录管理
 const rootPaths = ref([])  // 常驻目录列表
@@ -535,8 +536,10 @@ async function loadNode(node, resolve) {
         rootIndex: rootIndex,
         treeKey: `${rootIndex}-${item.path}`,
       }))
+      await waitForTreeRefreshFeedback(node.data.treeKey)
       resolve(children)
     } else {
+      clearPendingTreeRefresh(node.data.treeKey)
       resolve([])
       ElMessage.error('加载失败: ' + (res.error || '未知错误'))
     }
@@ -567,6 +570,30 @@ function addExpandedKey(treeKey) {
   if (!expandedTreeKeys.value.includes(treeKey)) {
     expandedTreeKeys.value.push(treeKey)
   }
+}
+
+function markPendingTreeRefresh(treeKey) {
+  if (!pendingTreeRefreshKeys.value.includes(treeKey)) {
+    pendingTreeRefreshKeys.value.push(treeKey)
+  }
+}
+
+function clearPendingTreeRefresh(treeKey) {
+  pendingTreeRefreshKeys.value = pendingTreeRefreshKeys.value.filter(key => key !== treeKey)
+}
+
+function delay(ms) {
+  return new Promise(resolve => {
+    setTimeout(resolve, ms)
+  })
+}
+
+async function waitForTreeRefreshFeedback(treeKey) {
+  if (!pendingTreeRefreshKeys.value.includes(treeKey)) {
+    return
+  }
+  await delay(250)
+  clearPendingTreeRefresh(treeKey)
 }
 
 function removeExpandedKeyBranch(treeKey) {
@@ -603,8 +630,12 @@ async function refreshNodeByKey(treeKey) {
   const descendantKeys = expandedTreeKeys.value.filter(key => key !== treeKey && isTreeKeyInBranch(key, treeKey))
   const wasExpanded = node.expanded
 
+  markPendingTreeRefresh(treeKey)
   node.loaded = false
-  if (!wasExpanded) return
+  if (!wasExpanded) {
+    clearPendingTreeRefresh(treeKey)
+    return
+  }
 
   await new Promise((resolve) => {
     node.loadData(() => {
