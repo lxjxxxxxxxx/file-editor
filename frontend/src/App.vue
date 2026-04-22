@@ -44,6 +44,7 @@
           </div>
           <!-- tree 始终渲染，使用 data 控制内容 -->
           <el-tree
+            :key="treeRenderKey"
             :data="treeData"
             :props="treeProps"
             node-key="treeKey"
@@ -384,6 +385,7 @@ const selectedRootIndex = ref(0)  // 当前选中的根目录索引
 const expandedTreeKeys = ref([])
 const refreshingTreeKeys = ref([])
 const minimumTreeRefreshDuration = 300
+const treeRenderKey = ref(0)
 
 // 常驻目录管理
 const rootPaths = ref([])  // 常驻目录列表
@@ -568,20 +570,7 @@ async function finishTreeRefreshing(treeKey, startedAt) {
 // 懒加载：加载节点数据
 async function loadNode(node, resolve) {
   if (node.level === 0) {
-    treeLoading.value = true
-    try {
-      if (!treeData.value.length) {
-        await fetchRootNodes()
-      }
-      resolve(treeData.value)
-    } catch (error) {
-      rootPaths.value = []
-      treeData.value = []
-      resolve([])
-      ElMessage.error('加载常驻目录失败: ' + error.message)
-    } finally {
-      treeLoading.value = false
-    }
+    resolve(treeData.value)
   } else {
     const treeKey = node.data.treeKey
     const path = node.data.path || ''
@@ -764,16 +753,7 @@ async function refreshRootTree() {
   addRefreshingKey(currentTreeKey)
   treeLoading.value = true
   try {
-    if (treeRef.value?.store?.root) {
-      treeRef.value.store.root.loaded = false
-      await new Promise((resolve) => {
-        treeRef.value.store.root.expand(() => resolve())
-      })
-    } else {
-      await fetchRootNodes()
-      await nextTick()
-    }
-
+    await fetchRootNodes()
     await restoreExpandedNodes(expandedKeys)
     if (currentTreeKey) {
       treeRef.value?.setCurrentKey(currentTreeKey)
