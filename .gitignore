@@ -4,3 +4,4 @@ dist/
 .claude/
 .codex
 FRONTEND_BUGS.md
+*.exe
