@@ -29,9 +29,9 @@ const (
 
 var (
 	// configPath 表示当前 Go 后端读取和保存配置文件的位置。
-	configPath       = filepath.Join(".", "config.json")
+	configPath       = filepath.Join(baseDir(), "config.json")
 	// frontendDistPath 表示前端构建产物目录，用于生产模式下的静态托管。
-	frontendDistPath = filepath.Join("..", "frontend", "dist")
+	frontendDistPath = filepath.Join(baseDir(), "dist")
 	// textExtensions 用于快速判断带扩展名文件是否按文本文件处理。
 	textExtensions   = map[string]struct{}{
 		".txt": {}, ".md": {}, ".log": {},
@@ -65,6 +65,22 @@ var (
 	// defaultExcludedNames 表示未配置排除列表时的默认忽略项。
 	defaultExcludedNames = []string{}
 )
+
+// baseDir 返回当前可执行程序所在目录；开发时回退到源码文件所在目录。
+func baseDir() string {
+	if exePath, err := os.Executable(); err == nil {
+		if resolvedExe, err := filepath.EvalSymlinks(exePath); err == nil {
+			return filepath.Dir(resolvedExe)
+		}
+		return filepath.Dir(exePath)
+	}
+
+	_, currentFile, _, ok := runtime.Caller(0)
+	if ok {
+		return filepath.Dir(currentFile)
+	}
+	return "."
+}
 
 // rootPathEntry 表示单个根目录配置项。
 type rootPathEntry struct {
