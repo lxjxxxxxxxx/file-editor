@@ -5,7 +5,7 @@
       <div class="toolbar-left">
         <span class="app-title">📂 在线文件编辑器</span>
         <el-button-group size="small" class="action-btns">
-          <el-button @click="refreshTree" :icon="Refresh" title="刷新">刷新</el-button>
+          <el-button @click="refreshTree()" :icon="Refresh" title="刷新">刷新</el-button>
           <el-button @click="showNewDialog('file')" :icon="DocumentAdd" title="新建文件">新文件</el-button>
           <el-button @click="showNewDialog('directory')" :icon="FolderAdd" title="新建文件夹">新文件夹</el-button>
           <el-button @click="handleDeleteItem" :disabled="!selectedPath" :icon="Delete" title="删除">删除</el-button>
@@ -60,7 +60,8 @@
           >
             <template #default="{ data }">
               <span class="tree-node" :class="{ 'is-root': data.isRoot }">
-                <el-icon v-if="data.isDirectory"><Folder /></el-icon>
+                <el-icon v-if="isTreeNodeRefreshing(data)" class="tree-loading-icon"><Loading /></el-icon>
+                <el-icon v-else-if="data.isDirectory"><Folder /></el-icon>
                 <el-icon v-else><Document /></el-icon>
                 <span class="tree-label">
                   <span v-if="data.alias" class="root-alias" :title="data.name">{{ data.alias }}</span>
@@ -360,7 +361,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
+import { ref, onMounted, onUnmounted, watch, computed, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import MonacoEditor from './MonacoEditor.vue'
 import {
@@ -381,6 +382,8 @@ const selectedPath = ref('')
 const selectedNodeData = ref(null)
 const selectedRootIndex = ref(0)  // 当前选中的根目录索引
 const expandedTreeKeys = ref([])
+const refreshingTreeKeys = ref([])
+const minimumTreeRefreshDuration = 300
 
 // 常驻目录管理
 const rootPaths = ref([])  // 常驻目录列表
@@ -501,44 +504,98 @@ const selectedItemName = ref('')  // 当前选中的文件/目录名
 const operationType = ref('')     // 'copy' 或 'move'
 const targetTreeKey = ref(0)      // 用于强制重新渲染树组件
 
+function mapRootNodes(items) {
+  return items.map(item => ({
+    ...item,
+    isRoot: true,
+    treeKey: `root-${item.rootIndex}`,
+  }))
+}
+
+function mapTreeChildren(items, rootIndex) {
+  return items.map(item => ({
+    ...item,
+    rootIndex,
+    treeKey: `${rootIndex}-${item.path}`,
+  }))
+}
+
+async function fetchRootNodes() {
+  const res = await api.getTree('', 0, true)
+  if (!res.success) {
+    throw new Error(res.error || '未知错误')
+  }
+  const roots = mapRootNodes(res.data)
+  rootPaths.value = roots
+  treeData.value = roots
+  return roots
+}
+
+async function fetchTreeChildren(path, rootIndex) {
+  const res = await api.getTree(path, rootIndex)
+  if (!res.success) {
+    throw new Error(res.error || '未知错误')
+  }
+  return mapTreeChildren(res.data, rootIndex)
+}
+
+function addRefreshingKey(treeKey) {
+  if (treeKey && !refreshingTreeKeys.value.includes(treeKey)) {
+    refreshingTreeKeys.value.push(treeKey)
+  }
+}
+
+function removeRefreshingKey(treeKey) {
+  refreshingTreeKeys.value = refreshingTreeKeys.value.filter(key => key !== treeKey)
+}
+
+function isTreeNodeRefreshing(data) {
+  return !!data?.treeKey && refreshingTreeKeys.value.includes(data.treeKey)
+}
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function finishTreeRefreshing(treeKey, startedAt) {
+  const remaining = minimumTreeRefreshDuration - (Date.now() - startedAt)
+  if (remaining > 0) {
+    await delay(remaining)
+  }
+  removeRefreshingKey(treeKey)
+}
+
 // 懒加载：加载节点数据
 async function loadNode(node, resolve) {
   if (node.level === 0) {
     treeLoading.value = true
-    // 第一层：加载所有常驻目录（根目录列表）
-    const res = await api.getTree('', 0, true)  // 第三个参数表示获取根列表
-    treeLoading.value = false
-    if (res.success) {
-      // 为每个根节点添加标记
-      const roots = res.data.map(item => ({
-        ...item,
-        isRoot: true,
-        treeKey: `root-${item.rootIndex}`,
-      }))
-      rootPaths.value = roots
-      // 如果没有常驻目录，显示空列表
-      resolve(roots)
-    } else {
+    try {
+      if (!treeData.value.length) {
+        await fetchRootNodes()
+      }
+      resolve(treeData.value)
+    } catch (error) {
       rootPaths.value = []
+      treeData.value = []
       resolve([])
-      ElMessage.error('加载常驻目录失败: ' + (res.error || '未知错误'))
+      ElMessage.error('加载常驻目录失败: ' + error.message)
+    } finally {
+      treeLoading.value = false
     }
   } else {
-    // 子目录：使用节点的 rootIndex
-    const path = node.data.path
+    const treeKey = node.data.treeKey
+    const path = node.data.path || ''
     const rootIndex = node.data.rootIndex || 0
-    const res = await api.getTree(path, rootIndex)
-    if (res.success) {
-      // 为子节点添加 rootIndex
-      const children = res.data.map(item => ({
-        ...item,
-        rootIndex: rootIndex,
-        treeKey: `${rootIndex}-${item.path}`,
-      }))
+    const startedAt = Date.now()
+    addRefreshingKey(treeKey)
+    try {
+      const children = await fetchTreeChildren(path, rootIndex)
       resolve(children)
-    } else {
+    } catch (error) {
       resolve([])
-      ElMessage.error('加载失败: ' + (res.error || '未知错误'))
+      ElMessage.error('加载失败: ' + error.message)
+    } finally {
+      await finishTreeRefreshing(treeKey, startedAt)
     }
   }
 }
@@ -577,13 +634,79 @@ function sortTreeKeysByDepth(treeKeys) {
   return [...treeKeys].sort((a, b) => a.split('/').length - b.split('/').length)
 }
 
-function restoreExpandedNodes(treeKeys) {
-  sortTreeKeysByDepth(treeKeys).forEach((treeKey) => {
-    const node = treeRef.value?.getNode(treeKey)
-    if (node && !node.expanded) {
-      node.expand()
+function parseTreeKey(treeKey) {
+  if (!treeKey) return null
+  if (treeKey.startsWith('root-')) {
+    return {
+      treeKey,
+      rootIndex: parseInt(treeKey.slice(5), 10) || 0,
+      path: '',
     }
+  }
+
+  const dividerIndex = treeKey.indexOf('-')
+  if (dividerIndex === -1) return null
+
+  return {
+    treeKey,
+    rootIndex: parseInt(treeKey.slice(0, dividerIndex), 10) || 0,
+    path: treeKey.slice(dividerIndex + 1),
+  }
+}
+
+function replaceNodeChildren(nodes, treeKey, children) {
+  return nodes.map(node => {
+    if (node.treeKey === treeKey) {
+      return {
+        ...node,
+        children,
+      }
+    }
+
+    if (Array.isArray(node.children) && node.children.length) {
+      return {
+        ...node,
+        children: replaceNodeChildren(node.children, treeKey, children),
+      }
+    }
+
+    return node
   })
+}
+
+function syncTreeDataChildren(treeKey, children) {
+  if (!treeKey) return
+  treeData.value = replaceNodeChildren(treeData.value, treeKey, children)
+
+  if (selectedNodeData.value?.treeKey === treeKey) {
+    selectedNodeData.value = {
+      ...selectedNodeData.value,
+      children,
+    }
+  }
+}
+
+function expandTreeNode(treeKey) {
+  return new Promise((resolve) => {
+    const node = treeRef.value?.getNode(treeKey)
+    if (!node) {
+      resolve()
+      return
+    }
+
+    if (node.expanded) {
+      resolve()
+      return
+    }
+
+    node.expand(() => resolve())
+  })
+}
+
+async function restoreExpandedNodes(treeKeys) {
+  for (const treeKey of sortTreeKeysByDepth(treeKeys)) {
+    await expandTreeNode(treeKey)
+  }
 }
 
 function handleNodeExpand(data) {
@@ -595,24 +718,35 @@ function handleNodeCollapse(data) {
 }
 
 async function refreshNodeByKey(treeKey) {
-  if (!treeRef.value) return
-
-  const node = treeRef.value.getNode(treeKey)
-  if (!node) return
-
+  const node = treeRef.value?.getNode(treeKey)
+  const parsedKey = parseTreeKey(treeKey)
   const descendantKeys = expandedTreeKeys.value.filter(key => key !== treeKey && isTreeKeyInBranch(key, treeKey))
-  const wasExpanded = node.expanded
+  const wasExpanded = !!node?.expanded
+  const path = node?.data?.path ?? parsedKey?.path ?? ''
+  const rootIndex = node?.data?.rootIndex ?? parsedKey?.rootIndex ?? 0
 
-  node.loaded = false
-  if (!wasExpanded) return
+  const startedAt = Date.now()
+  addRefreshingKey(treeKey)
+  try {
+    if (node) {
+      node.loaded = false
 
-  await new Promise((resolve) => {
-    node.loadData(() => {
-      node.expanded = true
-      restoreExpandedNodes(descendantKeys)
-      resolve()
-    })
-  })
+      if (wasExpanded) {
+        await new Promise((resolve) => {
+          node.expand(() => resolve())
+        })
+        await nextTick()
+        await restoreExpandedNodes(descendantKeys)
+      }
+    } else {
+      const children = await fetchTreeChildren(path, rootIndex)
+      syncTreeDataChildren(treeKey, children)
+    }
+  } catch (error) {
+    ElMessage.error('刷新失败: ' + error.message)
+  } finally {
+    await finishTreeRefreshing(treeKey, startedAt)
+  }
 }
 
 async function refreshNodeKeys(treeKeys) {
@@ -623,17 +757,33 @@ async function refreshNodeKeys(treeKeys) {
 }
 
 async function refreshRootTree() {
-  if (!treeRef.value) return
-
   const expandedKeys = [...expandedTreeKeys.value]
-  treeRef.value.store.root.loaded = false
+  const currentTreeKey = selectedNodeData.value?.treeKey || null
+  const startedAt = Date.now()
 
-  await new Promise((resolve) => {
-    treeRef.value.store.root.expand(() => {
-      restoreExpandedNodes(expandedKeys)
-      resolve()
-    })
-  })
+  addRefreshingKey(currentTreeKey)
+  treeLoading.value = true
+  try {
+    if (treeRef.value?.store?.root) {
+      treeRef.value.store.root.loaded = false
+      await new Promise((resolve) => {
+        treeRef.value.store.root.expand(() => resolve())
+      })
+    } else {
+      await fetchRootNodes()
+      await nextTick()
+    }
+
+    await restoreExpandedNodes(expandedKeys)
+    if (currentTreeKey) {
+      treeRef.value?.setCurrentKey(currentTreeKey)
+    }
+  } catch (error) {
+    ElMessage.error('刷新目录树失败: ' + error.message)
+  } finally {
+    treeLoading.value = false
+    await finishTreeRefreshing(currentTreeKey, startedAt)
+  }
 }
 
 async function refreshTree(treeKey = null) {
@@ -645,7 +795,7 @@ async function refreshTree(treeKey = null) {
   }
 
   if (selectedNodeData.value?.isDirectory) {
-    await refreshNodeByKey(getTreeKeyForPath(selectedPath.value, selectedRootIndex.value))
+    await refreshNodeByKey(selectedNodeData.value.treeKey || getTreeKeyForPath(selectedPath.value, selectedRootIndex.value))
     return
   }
 
@@ -1280,8 +1430,7 @@ function showRootInfo(data) {
 }
 
 onMounted(() => {
-  // 懒加载模式下，el-tree 会自动调用 load 加载根节点
-  // 不需要手动调用 refreshTree
+  refreshRootTree()
   window.addEventListener('keydown', onKeydown)
 })
 
@@ -1476,12 +1625,21 @@ html, body, #app { height: 100%; overflow: hidden; }
   background: #37373d !important;
 }
 
+.tree :deep(.el-tree-node__loading-icon) {
+  display: none !important;
+}
+
 .tree-node {
   display: flex;
   align-items: center;
   gap: 4px;
   flex: 1;
   padding-right: 8px;
+}
+
+.tree-loading-icon {
+  color: #409eff;
+  animation: rotate 1s linear infinite;
 }
 
 .tree-node.is-root {

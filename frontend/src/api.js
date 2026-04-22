@@ -20,7 +20,13 @@ export default {
   // 文件树 - 支持多根目录
   // listRoots: 是否获取根目录列表（而不是某个根目录的内容）
   getTree(path = '', rootIndex = 0, listRoots = false) {
-    return http.get('/files/tree', { params: { path, rootIndex, listRoots } }).then(r => r.data).catch(e => ({ success: false, error: e.response?.data?.error || e.message }))
+    return http.get('/files/tree', {
+      params: { path, rootIndex, listRoots, _ts: Date.now() },
+      headers: {
+        'Cache-Control': 'no-cache',
+        Pragma: 'no-cache'
+      }
+    }).then(r => r.data).catch(e => ({ success: false, error: e.response?.data?.error || e.message }))
   },
   getContent(path, rootIndex = 0) {
     return http.get('/files/content', { params: { path, rootIndex } }).then(r => r.data).catch(e => ({ success: false, error: e.response?.data?.error || e.message }))
