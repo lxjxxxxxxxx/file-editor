@@ -1232,10 +1232,10 @@ func (a *app) saveConfigLocked() error {
 		RootPaths        []rootPathEntry `json:"rootPaths"`
 		ExcludedNames    []string        `json:"excludedNames"`
 		ExcludeHidden    bool            `json:"excludeHidden"`
-		TextExtensions   []string        `json:"textExtensions,omitempty"`
-		TextFileNames    []string        `json:"textFileNames,omitempty"`
-		BinaryExtensions []string        `json:"binaryExtensions,omitempty"`
-		BinaryFileNames  []string        `json:"binaryFileNames,omitempty"`
+		TextExtensions   []string        `json:"textExtensions"`
+		TextFileNames    []string        `json:"textFileNames"`
+		BinaryExtensions []string        `json:"binaryExtensions"`
+		BinaryFileNames  []string        `json:"binaryFileNames"`
 	}{
 		Token:            cfg.Token,
 		Port:             cfg.Port,
