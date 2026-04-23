@@ -28,8 +28,8 @@ export default {
       }
     }).then(r => r.data).catch(e => ({ success: false, error: e.response?.data?.error || e.message }))
   },
-  getContent(path, rootIndex = 0) {
-    return http.get('/files/content', { params: { path, rootIndex } }).then(r => r.data).catch(e => ({ success: false, error: e.response?.data?.error || e.message }))
+  getContent(path, rootIndex = 0, forceText = false) {
+    return http.get('/files/content', { params: { path, rootIndex, forceText } }).then(r => r.data).catch(e => ({ success: false, error: e.response?.data?.error || e.message }))
   },
   saveFile(path, content, rootIndex = 0) {
     return http.post('/files/save', { path, content, rootIndex }).then(r => r.data).catch(e => ({ success: false, error: e.response?.data?.error || e.message }))

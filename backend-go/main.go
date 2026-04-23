@@ -27,32 +27,58 @@ const (
 	maxBodySize = 10 * 1024 * 1024
 )
 
+const defaultConfigFileContent = `{
+  "token": "file-editor-2024-secret-token",
+  "port": 3002,
+  "rootPaths": [],
+  "excludedNames": [],
+  "excludeHidden": false,
+  "textExtensions": [],
+  "textFileNames": [],
+  "binaryExtensions": [],
+  "binaryFileNames": []
+}
+`
+
 var (
 	// configPath 表示当前 Go 后端读取和保存配置文件的位置。
 	configPath       = filepath.Join(baseDir(), "config.json")
 	// frontendDistPath 表示前端构建产物目录，用于生产模式下的静态托管。
 	frontendDistPath = filepath.Join(baseDir(), "dist")
 	// textExtensions 用于快速判断带扩展名文件是否按文本文件处理。
-	textExtensions   = map[string]struct{}{
-		".txt": {}, ".md": {}, ".log": {},
-		".js": {}, ".ts": {}, ".jsx": {}, ".tsx": {}, ".vue": {},
-		".py": {}, ".rb": {}, ".java": {}, ".kt": {}, ".go": {}, ".rs": {}, ".lua": {}, ".pl": {},
-		".c": {}, ".cpp": {}, ".h": {}, ".hpp": {},
-		".html": {}, ".htm": {}, ".xml": {}, ".svg": {},
-		".css": {}, ".scss": {}, ".sass": {}, ".less": {},
-		".json": {}, ".json5": {}, ".toml": {}, ".yaml": {}, ".yml": {},
-		".ini": {}, ".cfg": {}, ".conf": {},
-		".sh": {}, ".bash": {}, ".zsh": {}, ".bat": {}, ".ps1": {},
-		".sql": {},
-		".env": {},
-		".csv": {}, ".tsv": {},
-		".php": {},
+	defaultTextExtensions = []string{
+		".txt", ".md", ".log",
+		".js", ".ts", ".jsx", ".tsx", ".vue",
+		".py", ".rb", ".java", ".kt", ".go", ".rs", ".lua", ".pl",
+		".c", ".cpp", ".h", ".hpp",
+		".html", ".htm", ".xml", ".svg",
+		".css", ".scss", ".sass", ".less",
+		".json", ".json5", ".toml", ".yaml", ".yml",
+		".ini", ".cfg", ".conf",
+		".sh", ".bash", ".zsh", ".bat", ".ps1",
+		".sql",
+		".env",
+		".csv", ".tsv",
+		".php",
 	}
 	// specialTextNames 用于识别没有常规扩展名但通常应按文本处理的文件名。
-	specialTextNames = map[string]struct{}{
-		"dockerfile":  {},
-		"makefile":    {},
-		"vagrantfile": {},
+	defaultTextFileNames = []string{
+		"dockerfile",
+		"makefile",
+		"vagrantfile",
+		".env",
+		".gitignore",
+		".gitattributes",
+		".editorconfig",
+		"nginx.conf",
+		"fstab",
+		"hosts",
+		"hostname",
+		"resolv.conf",
+		"environment",
+		"authorized_keys",
+		"known_hosts",
+		"config",
 	}
 	// binarySignatures 用于通过文件头特征快速排除常见二进制文件。
 	binarySignatures = [][]byte{
@@ -61,6 +87,14 @@ var (
 		{0x47, 0x49, 0x46},
 		{0x50, 0x4B},
 		{0x25, 0x50, 0x44, 0x46},
+	}
+	// defaultBinaryExtensions 用于快速排除常见二进制文件扩展名。
+	defaultBinaryExtensions = []string{
+		".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp",
+		".pdf", ".zip", ".gz", ".tar", ".tgz", ".7z", ".rar",
+		".exe", ".dll", ".so", ".dylib", ".bin", ".class", ".jar",
+		".woff", ".woff2", ".ttf", ".otf", ".eot",
+		".mp3", ".wav", ".flac", ".mp4", ".mov", ".avi", ".mkv",
 	}
 	// defaultExcludedNames 表示未配置排除列表时的默认忽略项。
 	defaultExcludedNames = []string{}
@@ -104,6 +138,14 @@ type config struct {
 	ExcludedNames []string        `json:"excludedNames"`
 	// ExcludeHidden 表示是否过滤隐藏文件和隐藏目录。
 	ExcludeHidden *bool           `json:"excludeHidden"`
+	// TextExtensions 表示额外允许按文本打开的扩展名列表。
+	TextExtensions []string       `json:"textExtensions"`
+	// TextFileNames 表示额外允许按文本打开的文件名列表。
+	TextFileNames  []string       `json:"textFileNames"`
+	// BinaryExtensions 表示明确按二进制处理的扩展名列表。
+	BinaryExtensions []string     `json:"binaryExtensions"`
+	// BinaryFileNames 表示明确按二进制处理的文件名列表。
+	BinaryFileNames []string      `json:"binaryFileNames"`
 	// RootPaths 表示标准化后的根目录配置。
 	RootPaths     []rootPathEntry `json:"-"`
 }
@@ -205,6 +247,14 @@ type app struct {
 	excludedNames map[string]struct{}
 	// excludeHidden 表示运行期是否排除隐藏文件。
 	excludeHidden bool
+	// textExtensions 表示运行期文本扩展名集合。
+	textExtensions map[string]struct{}
+	// textFileNames 表示运行期文本文件名集合。
+	textFileNames map[string]struct{}
+	// binaryExtensions 表示运行期二进制扩展名集合。
+	binaryExtensions map[string]struct{}
+	// binaryFileNames 表示运行期二进制文件名集合。
+	binaryFileNames map[string]struct{}
 	// staticEnabled 表示是否启用前端静态文件托管。
 	staticEnabled bool
 }
@@ -499,6 +549,7 @@ func (a *app) handleFilesContent(w http.ResponseWriter, r *http.Request) {
 
 	filePath := r.URL.Query().Get("path")
 	rootIndex := parseRootIndexFromQuery(r)
+	forceText := r.URL.Query().Get("forceText") == "true"
 	if filePath == "" {
 		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "缺少 path"})
 		return
@@ -524,12 +575,12 @@ func (a *app) handleFilesContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ok, err := isTextFile(real, filePath)
+	ok, err := a.isTextFile(real, filePath)
 	if err != nil {
 		writeAppError(w, err)
 		return
 	}
-	if !ok {
+	if !ok && !forceText {
 		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "不支持编辑此文件类型"})
 		return
 	}
@@ -990,6 +1041,10 @@ func (a *app) handleRootsUpdate(w http.ResponseWriter, r *http.Request) {
 
 // loadConfig 从磁盘读取配置，并将兼容格式归一化到运行时结构中。
 func (a *app) loadConfig() error {
+	if err := ensureConfigFileExists(); err != nil {
+		return err
+	}
+
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return err
@@ -1020,23 +1075,45 @@ func (a *app) loadConfig() error {
 	return nil
 }
 
+// ensureConfigFileExists 确保配置文件存在，不存在时写入内置的完整模板。
+func ensureConfigFileExists() error {
+	if _, err := os.Stat(configPath); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, []byte(defaultConfigFileContent), 0o644)
+}
+
 // saveConfigLocked 将当前内存中的配置写回磁盘，调用方需持有写锁。
 func (a *app) saveConfigLocked() error {
 	cfg := a.config
 	cfg.RootPath = ""
 	cfg.RootPathsRaw = nil
 	data, err := json.MarshalIndent(struct {
-		Token         string          `json:"token"`
-		Port          int             `json:"port"`
-		RootPaths     []rootPathEntry `json:"rootPaths"`
-		ExcludedNames []string        `json:"excludedNames"`
-		ExcludeHidden bool            `json:"excludeHidden"`
+		Token            string          `json:"token"`
+		Port             int             `json:"port"`
+		RootPaths        []rootPathEntry `json:"rootPaths"`
+		ExcludedNames    []string        `json:"excludedNames"`
+		ExcludeHidden    bool            `json:"excludeHidden"`
+		TextExtensions   []string        `json:"textExtensions,omitempty"`
+		TextFileNames    []string        `json:"textFileNames,omitempty"`
+		BinaryExtensions []string        `json:"binaryExtensions,omitempty"`
+		BinaryFileNames  []string        `json:"binaryFileNames,omitempty"`
 	}{
-		Token:         cfg.Token,
-		Port:          cfg.Port,
-		RootPaths:     cfg.RootPaths,
-		ExcludedNames: cfg.ExcludedNames,
-		ExcludeHidden: a.excludeHidden,
+		Token:            cfg.Token,
+		Port:             cfg.Port,
+		RootPaths:        cfg.RootPaths,
+		ExcludedNames:    cfg.ExcludedNames,
+		ExcludeHidden:    a.excludeHidden,
+		TextExtensions:   cfg.TextExtensions,
+		TextFileNames:    cfg.TextFileNames,
+		BinaryExtensions: cfg.BinaryExtensions,
+		BinaryFileNames:  cfg.BinaryFileNames,
 	}, "", "  ")
 	if err != nil {
 		return err
@@ -1068,6 +1145,57 @@ func (a *app) rebuildRuntimeConfigLocked() {
 	if a.config.ExcludeHidden != nil {
 		a.excludeHidden = *a.config.ExcludeHidden
 	}
+
+	a.textExtensions = normalizeStringSet(defaultTextExtensions, true)
+	mergeStringSet(a.textExtensions, cfgStringSlice(a.config.TextExtensions), true)
+
+	a.textFileNames = normalizeStringSet(defaultTextFileNames, false)
+	mergeStringSet(a.textFileNames, cfgStringSlice(a.config.TextFileNames), false)
+
+	a.binaryExtensions = normalizeStringSet(defaultBinaryExtensions, true)
+	mergeStringSet(a.binaryExtensions, cfgStringSlice(a.config.BinaryExtensions), true)
+
+	a.binaryFileNames = normalizeStringSet(nil, false)
+	mergeStringSet(a.binaryFileNames, cfgStringSlice(a.config.BinaryFileNames), false)
+}
+
+// cfgStringSlice 返回配置切片的副本，避免运行时误改原配置。
+func cfgStringSlice(values []string) []string {
+	out := make([]string, len(values))
+	copy(out, values)
+	return out
+}
+
+// normalizeStringSet 将字符串列表标准化为集合，可选按扩展名规则补点。
+func normalizeStringSet(values []string, isExtension bool) map[string]struct{} {
+	set := make(map[string]struct{})
+	mergeStringSet(set, values, isExtension)
+	return set
+}
+
+// mergeStringSet 将字符串列表合并进目标集合。
+func mergeStringSet(target map[string]struct{}, values []string, isExtension bool) {
+	for _, value := range values {
+		normalized := normalizeFileRule(value, isExtension)
+		if normalized == "" {
+			continue
+		}
+		target[normalized] = struct{}{}
+	}
+}
+
+// normalizeFileRule 统一清理配置中的扩展名和文件名。
+func normalizeFileRule(value string, isExtension bool) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if normalized == "" {
+		return ""
+	}
+	if isExtension {
+		if !strings.HasPrefix(normalized, ".") {
+			normalized = "." + normalized
+		}
+	}
+	return normalized
 }
 
 // getRootInfos 返回适合响应给前端的根目录信息列表。
@@ -1279,29 +1407,42 @@ func sortNodes(nodes []fileNode) {
 	})
 }
 
-// isTextFile 根据扩展名、文件头和内容类型判断目标是否可按文本编辑。
-func isTextFile(realPath, filePath string) (bool, error) {
+// isTextFile 优先根据内容探测判断文本文件，并允许配置扩展规则。
+func (a *app) isTextFile(realPath, filePath string) (bool, error) {
 	ext := strings.ToLower(filepath.Ext(filePath))
 	baseName := strings.ToLower(filepath.Base(filePath))
-	if _, ok := textExtensions[ext]; ok {
+	if a.isConfiguredBinaryFile(ext, baseName) {
+		return false, nil
+	}
+
+	header, err := readFileHeader(realPath, 4096)
+	if err != nil {
+		return false, wrapFSError(err)
+	}
+	if len(header) == 0 {
 		return true, nil
 	}
-	if _, ok := specialTextNames[baseName]; ok {
+
+	for _, sig := range binarySignatures {
+		if len(header) >= len(sig) && bytes.Equal(header[:len(sig)], sig) {
+			return false, nil
+		}
+	}
+	if hasNullByte(header) {
+		return false, nil
+	}
+	if isLikelyTextContent(header) {
+		return true, nil
+	}
+
+	if a.isConfiguredTextFile(ext, baseName) {
 		return true, nil
 	}
 
 	if ext != "" {
 		contentType := mime.TypeByExtension(ext)
-		return strings.HasPrefix(contentType, "text/"), nil
-	}
-
-	header, err := readFileHeader(realPath, 512)
-	if err != nil {
-		return false, wrapFSError(err)
-	}
-	for _, sig := range binarySignatures {
-		if len(header) >= len(sig) && bytes.Equal(header[:len(sig)], sig) {
-			return false, nil
+		if strings.HasPrefix(contentType, "text/") || contentType == "application/json" || contentType == "application/xml" || strings.HasSuffix(contentType, "+xml") {
+			return true, nil
 		}
 	}
 
@@ -1313,6 +1454,24 @@ func isTextFile(realPath, filePath string) (bool, error) {
 		return true, nil
 	}
 	return false, nil
+}
+
+// isConfiguredTextFile 判断文件是否命中了文本规则。
+func (a *app) isConfiguredTextFile(ext, baseName string) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	_, extOK := a.textExtensions[ext]
+	_, nameOK := a.textFileNames[baseName]
+	return extOK || nameOK
+}
+
+// isConfiguredBinaryFile 判断文件是否命中了二进制规则。
+func (a *app) isConfiguredBinaryFile(ext, baseName string) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	_, extOK := a.binaryExtensions[ext]
+	_, nameOK := a.binaryFileNames[baseName]
+	return extOK || nameOK
 }
 
 // readFileHeader 读取文件头部若干字节，用于类型探测。
@@ -1329,6 +1488,40 @@ func readFileHeader(path string, size int) ([]byte, error) {
 		return nil, err
 	}
 	return buf[:n], nil
+}
+
+// hasNullByte 判断内容中是否包含明显的二进制空字节。
+func hasNullByte(data []byte) bool {
+	for _, b := range data {
+		if b == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// isLikelyTextContent 根据可打印字符比例粗略判断文本内容。
+func isLikelyTextContent(data []byte) bool {
+	if len(data) == 0 {
+		return true
+	}
+	if !isLikelyUTF8(data) {
+		return false
+	}
+
+	printable := 0
+	for _, b := range data {
+		switch {
+		case b == '\n' || b == '\r' || b == '\t':
+			printable++
+		case b >= 0x20 && b < 0x7F:
+			printable++
+		case b >= 0x80:
+			printable++
+		}
+	}
+
+	return float64(printable)/float64(len(data)) >= 0.85
 }
 
 // isLikelyUTF8 粗略判断一段字节是否更像 UTF-8 文本。

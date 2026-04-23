@@ -815,7 +815,7 @@ async function openFile(filePath, fileName, rootIndex = 0) {
   activeTab.value = tabKey
 }
 
-async function loadFileContent(tabKey) {
+async function loadFileContent(tabKey, forceText = false) {
   const tab = getTabRecord(tabKey)
   if (!tab) return
 
@@ -831,7 +831,7 @@ async function loadFileContent(tabKey) {
   fileLoadingPath.value = filePath
   ElMessage.info({ message: `正在加载: ${filePath.split('/').pop()}`, duration: 1500 })
 
-  const res = await api.getContent(filePath, rootIndex)
+  const res = await api.getContent(filePath, rootIndex, forceText)
 
   fileLoading.value = false
   fileLoadingPath.value = ''
@@ -857,6 +857,23 @@ async function loadFileContent(tabKey) {
       }
     })
   } else {
+    if (!forceText && res.error === '不支持编辑此文件类型') {
+      try {
+        await ElMessageBox.confirm(
+          `${tab.name} 未被自动识别为文本文件，是否仍按文本方式打开？`,
+          '按文本打开',
+          {
+            confirmButtonText: '仍然打开',
+            cancelButtonText: '取消',
+            type: 'warning',
+          }
+        )
+        await loadFileContent(tabKey, true)
+        return
+      } catch {
+        return
+      }
+    }
     ElMessage.error('读取失败: ' + res.error)
   }
 }
