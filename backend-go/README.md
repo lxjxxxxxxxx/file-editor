@@ -77,7 +77,7 @@ go run .
 
 ## 安装为 systemd 服务
 
-程序支持命令行参数 `install`。
+程序支持命令行参数 `install` 和 `uninstall`。
 
 - 在 Linux 环境下，执行 `install` 会：
   - 自动确保程序目录下存在 `config.json`
@@ -94,6 +94,21 @@ sudo ./file-editor-backend install
 ```
 
 如果直接用 `go run . install`，由于 Go 会把临时编译产物放到临时目录，systemd 中记录的 `ExecStart` 也会指向临时路径，因此更推荐先编译成固定二进制后再执行安装。
+
+卸载示例：
+
+```bash
+sudo ./file-editor-backend uninstall
+```
+
+执行 `uninstall` 时，在 Linux 环境下会：
+
+- 执行 `systemctl disable --now file-editor-backend.service`
+- 删除 `/etc/systemd/system/file-editor-backend.service`
+- 执行 `systemctl daemon-reload`
+- 尝试执行 `systemctl reset-failed file-editor-backend.service`
+
+如果当前环境不是 Linux，程序会打印提示并跳过。
 
 静态前端资源会从程序目录下的 `dist` 读取。
 

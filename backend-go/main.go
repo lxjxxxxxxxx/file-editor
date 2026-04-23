@@ -338,6 +338,12 @@ func main() {
 		}
 		return
 	}
+	if hasCLIArg("uninstall") {
+		if err := uninstallService(); err != nil {
+			log.Fatalf("卸载服务失败: %v", err)
+		}
+		return
+	}
 
 	a := &app{}
 	if err := a.loadConfig(); err != nil {
@@ -408,7 +414,7 @@ func installService() error {
 		exePath = resolvedPath
 	}
 
-	servicePath := filepath.Join("/etc", "systemd", "system", systemdServiceName)
+	servicePath := systemdServicePath()
 	serviceContent := buildSystemdServiceContent(exePath, baseDir())
 	if err := os.WriteFile(servicePath, []byte(serviceContent), 0o644); err != nil {
 		return fmt.Errorf("写入服务文件失败: %w", err)
@@ -424,6 +430,41 @@ func installService() error {
 	log.Printf("systemd 服务安装完成: %s", servicePath)
 	log.Printf("已设置开机启动并尝试立即启动: %s", systemdServiceName)
 	return nil
+}
+
+// uninstallService 在 Linux 环境下停止并移除已安装的 systemd 服务。
+func uninstallService() error {
+	if runtime.GOOS != "linux" {
+		log.Printf("uninstall 参数仅在 Linux 环境下用于卸载 systemd 服务，当前系统为 %s，已跳过。", runtime.GOOS)
+		return nil
+	}
+	if os.Geteuid() != 0 {
+		return errors.New("uninstall 需要 root 权限，请使用 sudo 运行")
+	}
+
+	servicePath := systemdServicePath()
+	if err := runCommand("systemctl", "disable", "--now", systemdServiceName); err != nil {
+		log.Printf("停止或禁用服务时提示: %v", err)
+	}
+
+	if err := os.Remove(servicePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("删除服务文件失败: %w", err)
+	}
+
+	if err := runCommand("systemctl", "daemon-reload"); err != nil {
+		return err
+	}
+	if err := runCommand("systemctl", "reset-failed", systemdServiceName); err != nil {
+		log.Printf("清理失败状态时提示: %v", err)
+	}
+
+	log.Printf("systemd 服务已卸载: %s", systemdServiceName)
+	return nil
+}
+
+// systemdServicePath 返回 systemd unit 文件路径。
+func systemdServicePath() string {
+	return filepath.Join("/etc", "systemd", "system", systemdServiceName)
 }
 
 // buildSystemdServiceContent 生成 systemd unit 文件内容。
