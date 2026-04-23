@@ -6,3 +6,4 @@ dist/
 FRONTEND_BUGS.md
 *.exe
 bin/
+config.json
