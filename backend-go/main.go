@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -25,6 +26,8 @@ const (
 	maxFileSize = 2 * 1024 * 1024
 	// maxBodySize 表示接口允许接收的 JSON 请求体大小上限。
 	maxBodySize = 10 * 1024 * 1024
+	// systemdServiceName 表示 Linux 安装模式下写入的 systemd 服务名。
+	systemdServiceName = "file-editor-backend.service"
 )
 
 const defaultConfigFileContent = `{
@@ -329,6 +332,13 @@ type updateRootRequest struct {
 
 // main 是程序入口，负责加载配置、注册路由并启动 HTTP 服务。
 func main() {
+	if hasCLIArg("install") {
+		if err := installService(); err != nil {
+			log.Fatalf("安装服务失败: %v", err)
+		}
+		return
+	}
+
 	a := &app{}
 	if err := a.loadConfig(); err != nil {
 		log.Fatalf("加载配置失败: %v", err)
@@ -365,6 +375,87 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	log.Fatal(server.ListenAndServe())
+}
+
+// hasCLIArg 判断命令行参数中是否包含指定参数。
+func hasCLIArg(target string) bool {
+	for _, arg := range os.Args[1:] {
+		if strings.EqualFold(strings.TrimSpace(arg), target) {
+			return true
+		}
+	}
+	return false
+}
+
+// installService 在 Linux 环境下安装 systemd 服务并设置开机启动。
+func installService() error {
+	if runtime.GOOS != "linux" {
+		log.Printf("install 参数仅在 Linux 环境下用于安装 systemd 服务，当前系统为 %s，已跳过。", runtime.GOOS)
+		return nil
+	}
+	if os.Geteuid() != 0 {
+		return errors.New("install 需要 root 权限，请使用 sudo 运行")
+	}
+	if err := ensureConfigFileExists(); err != nil {
+		return fmt.Errorf("初始化配置文件失败: %w", err)
+	}
+
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("获取程序路径失败: %w", err)
+	}
+	if resolvedPath, err := filepath.EvalSymlinks(exePath); err == nil {
+		exePath = resolvedPath
+	}
+
+	servicePath := filepath.Join("/etc", "systemd", "system", systemdServiceName)
+	serviceContent := buildSystemdServiceContent(exePath, baseDir())
+	if err := os.WriteFile(servicePath, []byte(serviceContent), 0o644); err != nil {
+		return fmt.Errorf("写入服务文件失败: %w", err)
+	}
+
+	if err := runCommand("systemctl", "daemon-reload"); err != nil {
+		return err
+	}
+	if err := runCommand("systemctl", "enable", "--now", systemdServiceName); err != nil {
+		return err
+	}
+
+	log.Printf("systemd 服务安装完成: %s", servicePath)
+	log.Printf("已设置开机启动并尝试立即启动: %s", systemdServiceName)
+	return nil
+}
+
+// buildSystemdServiceContent 生成 systemd unit 文件内容。
+func buildSystemdServiceContent(exePath, workingDir string) string {
+	return fmt.Sprintf(`[Unit]
+Description=File Editor Backend
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%s
+ExecStart=%s
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+`, workingDir, exePath)
+}
+
+// runCommand 执行外部命令，并在失败时带上输出内容。
+func runCommand(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		text := strings.TrimSpace(string(output))
+		if text == "" {
+			return fmt.Errorf("%s %s 执行失败: %w", name, strings.Join(args, " "), err)
+		}
+		return fmt.Errorf("%s %s 执行失败: %w: %s", name, strings.Join(args, " "), err, text)
+	}
+	return nil
 }
 
 // withCORS 为所有请求追加跨域响应头，并处理预检请求。

@@ -75,6 +75,26 @@ cd backend-go
 go run .
 ```
 
+## 安装为 systemd 服务
+
+程序支持命令行参数 `install`。
+
+- 在 Linux 环境下，执行 `install` 会：
+  - 自动确保程序目录下存在 `config.json`
+  - 将当前程序安装为 systemd 服务
+  - 写入 `/etc/systemd/system/file-editor-backend.service`
+  - 执行 `systemctl daemon-reload`
+  - 执行 `systemctl enable --now file-editor-backend.service`
+- 在非 Linux 环境下，程序会打印提示并跳过，不会报错退出。
+
+示例：
+
+```bash
+sudo ./file-editor-backend install
+```
+
+如果直接用 `go run . install`，由于 Go 会把临时编译产物放到临时目录，systemd 中记录的 `ExecStart` 也会指向临时路径，因此更推荐先编译成固定二进制后再执行安装。
+
 静态前端资源会从程序目录下的 `dist` 读取。
 
 也就是说，当前目录结构应类似于：
