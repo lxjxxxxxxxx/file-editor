@@ -5,3 +5,4 @@ dist/
 .codex
 FRONTEND_BUGS.md
 *.exe
+bin/
