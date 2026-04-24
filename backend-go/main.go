@@ -45,7 +45,7 @@ const defaultConfigFileContent = `{
 
 var (
 	// configPath 表示当前 Go 后端读取和保存配置文件的位置。
-	configPath       = filepath.Join(baseDir(), "config.json")
+	configPath = filepath.Join(baseDir(), "config.json")
 	// frontendDistPath 表示前端构建产物目录，用于生产模式下的静态托管。
 	frontendDistPath = filepath.Join(baseDir(), "dist")
 	// textExtensions 用于快速判断带扩展名文件是否按文本文件处理。
@@ -122,7 +122,7 @@ func baseDir() string {
 // rootPathEntry 表示单个根目录配置项。
 type rootPathEntry struct {
 	// Path 表示根目录路径。
-	Path  string `json:"path"`
+	Path string `json:"path"`
 	// Alias 表示根目录在前端展示时使用的别名。
 	Alias string `json:"alias"`
 }
@@ -130,79 +130,79 @@ type rootPathEntry struct {
 // config 表示配置文件在内存中的结构。
 type config struct {
 	// Token 表示 API 鉴权令牌。
-	Token         string          `json:"token"`
+	Token string `json:"token"`
 	// Port 表示服务监听端口。
-	Port          int             `json:"port"`
+	Port int `json:"port"`
 	// RootPath 表示旧版单目录配置字段，仅用于兼容读取。
-	RootPath      string          `json:"rootPath,omitempty"`
+	RootPath string `json:"rootPath,omitempty"`
 	// RootPathsRaw 表示原始的 rootPaths JSON 内容，用于兼容多种格式。
-	RootPathsRaw  json.RawMessage `json:"rootPaths"`
+	RootPathsRaw json.RawMessage `json:"rootPaths"`
 	// ExcludedNames 表示需要在文件树中过滤掉的名称列表。
-	ExcludedNames []string        `json:"excludedNames"`
+	ExcludedNames []string `json:"excludedNames"`
 	// ExcludeHidden 表示是否过滤隐藏文件和隐藏目录。
-	ExcludeHidden *bool           `json:"excludeHidden"`
+	ExcludeHidden *bool `json:"excludeHidden"`
 	// TextExtensions 表示额外允许按文本打开的扩展名列表。
-	TextExtensions []string       `json:"textExtensions"`
+	TextExtensions []string `json:"textExtensions"`
 	// TextFileNames 表示额外允许按文本打开的文件名列表。
-	TextFileNames  []string       `json:"textFileNames"`
+	TextFileNames []string `json:"textFileNames"`
 	// BinaryExtensions 表示明确按二进制处理的扩展名列表。
-	BinaryExtensions []string     `json:"binaryExtensions"`
+	BinaryExtensions []string `json:"binaryExtensions"`
 	// BinaryFileNames 表示明确按二进制处理的文件名列表。
-	BinaryFileNames []string      `json:"binaryFileNames"`
+	BinaryFileNames []string `json:"binaryFileNames"`
 	// RootPaths 表示标准化后的根目录配置。
-	RootPaths     []rootPathEntry `json:"-"`
+	RootPaths []rootPathEntry `json:"-"`
 }
 
 // rootInfo 表示返回给前端的根目录元数据。
 type rootInfo struct {
 	// Index 表示根目录在当前配置数组中的索引。
-	Index   int    `json:"index"`
+	Index int `json:"index"`
 	// Path 表示配置中保存的原始路径。
-	Path    string `json:"path"`
+	Path string `json:"path"`
 	// Name 表示前端展示用名称，优先使用别名。
-	Name    string `json:"name"`
+	Name string `json:"name"`
 	// AbsPath 表示根目录的绝对路径。
 	AbsPath string `json:"absPath"`
 	// Alias 表示根目录别名。
-	Alias   string `json:"alias"`
+	Alias string `json:"alias"`
 }
 
 // fileNode 表示文件树中的单个节点。
 type fileNode struct {
 	// Name 表示当前节点名称。
-	Name        string      `json:"name"`
+	Name string `json:"name"`
 	// Path 表示相对于根目录的路径。
-	Path        string      `json:"path"`
+	Path string `json:"path"`
 	// RootIndex 表示当前节点所属的根目录索引。
-	RootIndex   int         `json:"rootIndex"`
+	RootIndex int `json:"rootIndex"`
 	// AbsPath 表示根节点时返回的绝对路径。
-	AbsPath     string      `json:"absPath,omitempty"`
+	AbsPath string `json:"absPath,omitempty"`
 	// Alias 表示根节点的别名。
-	Alias       string      `json:"alias,omitempty"`
+	Alias string `json:"alias,omitempty"`
 	// IsDirectory 表示当前节点是否为目录。
-	IsDirectory bool        `json:"isDirectory"`
+	IsDirectory bool `json:"isDirectory"`
 	// IsFile 表示当前节点是否为普通文件。
-	IsFile      bool        `json:"isFile"`
+	IsFile bool `json:"isFile"`
 	// Size 表示文件或目录的大小。
-	Size        int64       `json:"size"`
+	Size int64 `json:"size"`
 	// Mtime 表示最后修改时间的毫秒时间戳。
-	Mtime       int64       `json:"mtime"`
+	Mtime int64 `json:"mtime"`
 	// Mode 表示权限位的八进制字符串。
-	Mode        string      `json:"mode"`
+	Mode string `json:"mode"`
 	// Children 表示目录节点的子节点，占位或实际内容。
-	Children    interface{} `json:"children,omitempty"`
+	Children interface{} `json:"children,omitempty"`
 }
 
 // apiResponse 表示统一的接口响应结构。
 type apiResponse struct {
 	// Success 表示接口调用是否成功。
-	Success bool        `json:"success"`
+	Success bool `json:"success"`
 	// Error 表示失败时的错误信息。
-	Error   string      `json:"error,omitempty"`
+	Error string `json:"error,omitempty"`
 	// Message 表示成功时的提示信息。
-	Message string      `json:"message,omitempty"`
+	Message string `json:"message,omitempty"`
 	// Data 表示具体的业务数据。
-	Data    interface{} `json:"data,omitempty"`
+	Data interface{} `json:"data,omitempty"`
 }
 
 // fileContentData 表示读取文件内容接口的返回体。
@@ -210,31 +210,31 @@ type fileContentData struct {
 	// Content 表示文件文本内容。
 	Content string `json:"content"`
 	// Size 表示文件大小。
-	Size    int64  `json:"size"`
+	Size int64 `json:"size"`
 	// Path 表示文件相对路径。
-	Path    string `json:"path"`
+	Path string `json:"path"`
 }
 
 // fileStatData 表示文件状态信息。
 type fileStatData struct {
 	// Name 表示文件名或目录名。
-	Name        string `json:"name"`
+	Name string `json:"name"`
 	// Path 表示文件相对路径。
-	Path        string `json:"path"`
+	Path string `json:"path"`
 	// IsFile 表示是否为普通文件。
-	IsFile      bool   `json:"isFile"`
+	IsFile bool `json:"isFile"`
 	// IsDirectory 表示是否为目录。
-	IsDirectory bool   `json:"isDirectory"`
+	IsDirectory bool `json:"isDirectory"`
 	// Size 表示文件大小。
-	Size        int64  `json:"size"`
+	Size int64 `json:"size"`
 	// Mode 表示权限位八进制字符串。
-	Mode        string `json:"mode"`
+	Mode string `json:"mode"`
 	// Mtime 表示格式化后的修改时间。
-	Mtime       string `json:"mtime"`
+	Mtime string `json:"mtime"`
 	// UID 表示文件所有者 ID，目前跨平台统一返回 0。
-	UID         int    `json:"uid"`
+	UID int `json:"uid"`
 	// GID 表示文件所属组 ID，目前跨平台统一返回 0。
-	GID         int    `json:"gid"`
+	GID int `json:"gid"`
 }
 
 // app 表示整个后端服务的运行时状态。
@@ -243,9 +243,9 @@ type app struct {
 	mu sync.RWMutex
 
 	// config 表示当前生效的原始配置。
-	config        config
+	config config
 	// rootPaths 表示运行期使用的根目录路径列表。
-	rootPaths     []string
+	rootPaths []string
 	// excludedNames 表示运行期使用的排除名称集合。
 	excludedNames map[string]struct{}
 	// excludeHidden 表示运行期是否排除隐藏文件。
@@ -265,59 +265,59 @@ type app struct {
 // createRequest 表示创建文件或目录接口的请求体。
 type createRequest struct {
 	// Path 表示要创建的目标相对路径。
-	Path      string `json:"path"`
+	Path string `json:"path"`
 	// Type 表示创建类型，directory 表示目录，其余按文件处理。
-	Type      string `json:"type"`
+	Type string `json:"type"`
 	// RootIndex 表示目标所属根目录索引。
-	RootIndex *int   `json:"rootIndex"`
+	RootIndex *int `json:"rootIndex"`
 	// Root 表示兼容旧前端时使用的根目录索引字段。
-	Root      *int   `json:"root"`
+	Root *int `json:"root"`
 }
 
 // saveRequest 表示保存文件接口的请求体。
 type saveRequest struct {
 	// Path 表示要保存的文件相对路径。
-	Path      string `json:"path"`
+	Path string `json:"path"`
 	// Content 表示待写入的文件内容。
-	Content   string `json:"content"`
+	Content string `json:"content"`
 	// RootIndex 表示目标所属根目录索引。
-	RootIndex *int   `json:"rootIndex"`
+	RootIndex *int `json:"rootIndex"`
 	// Root 表示兼容旧前端时使用的根目录索引字段。
-	Root      *int   `json:"root"`
+	Root *int `json:"root"`
 }
 
 // copyMoveRequest 表示复制或移动接口的请求体。
 type copyMoveRequest struct {
 	// From 表示源路径。
-	From      string `json:"from"`
+	From string `json:"from"`
 	// To 表示目标路径。
-	To        string `json:"to"`
+	To string `json:"to"`
 	// FromRoot 表示源路径所属根目录索引。
-	FromRoot  *int   `json:"fromRoot"`
+	FromRoot *int `json:"fromRoot"`
 	// ToRoot 表示目标路径所属根目录索引。
-	ToRoot    *int   `json:"toRoot"`
+	ToRoot *int `json:"toRoot"`
 	// RootIndex 表示兼容单根目录时的索引字段。
-	RootIndex *int   `json:"rootIndex"`
+	RootIndex *int `json:"rootIndex"`
 	// Root 表示兼容旧前端时使用的索引字段。
-	Root      *int   `json:"root"`
+	Root *int `json:"root"`
 }
 
 // permissionsRequest 表示修改权限接口的请求体。
 type permissionsRequest struct {
 	// Path 表示目标文件相对路径。
-	Path      string `json:"path"`
+	Path string `json:"path"`
 	// Mode 表示待设置的八进制权限字符串。
-	Mode      string `json:"mode"`
+	Mode string `json:"mode"`
 	// RootIndex 表示目标所属根目录索引。
-	RootIndex *int   `json:"rootIndex"`
+	RootIndex *int `json:"rootIndex"`
 	// Root 表示兼容旧前端时使用的根目录索引字段。
-	Root      *int   `json:"root"`
+	Root *int `json:"root"`
 }
 
 // addRootRequest 表示新增常驻目录接口的请求体。
 type addRootRequest struct {
 	// Path 表示要加入常驻列表的目录路径。
-	Path  string `json:"path"`
+	Path string `json:"path"`
 	// Alias 表示该目录的展示别名。
 	Alias string `json:"alias"`
 }
@@ -325,7 +325,7 @@ type addRootRequest struct {
 // updateRootRequest 表示更新常驻目录别名接口的请求体。
 type updateRootRequest struct {
 	// Index 表示待修改的根目录索引。
-	Index int    `json:"index"`
+	Index int `json:"index"`
 	// Alias 表示新的展示别名。
 	Alias string `json:"alias"`
 }
@@ -897,6 +897,16 @@ func (a *app) handleFilesCopy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	fromStat, err := os.Lstat(fromReal)
+	if err != nil {
+		writeAppError(w, wrapFSError(err))
+		return
+	}
+	if fromStat.IsDir() && isPathInsideOrSame(fromReal, toReal) {
+		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "不能复制目录到自身或其子目录中"})
+		return
+	}
+
 	if _, err := os.Stat(toReal); err == nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "目标已存在"})
 		return
@@ -939,6 +949,16 @@ func (a *app) handleFilesMove(w http.ResponseWriter, r *http.Request) {
 	toReal, err := a.resolvePath(req.To, toRoot)
 	if err != nil {
 		writeAppError(w, err)
+		return
+	}
+
+	fromStat, err := os.Lstat(fromReal)
+	if err != nil {
+		writeAppError(w, wrapFSError(err))
+		return
+	}
+	if fromStat.IsDir() && isPathInsideOrSame(fromReal, toReal) {
+		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "不能移动目录到自身或其子目录中"})
 		return
 	}
 
@@ -1790,6 +1810,20 @@ func samePath(a, b string) bool {
 	return filepath.Clean(a) == filepath.Clean(b)
 }
 
+// isPathInsideOrSame 判断目标路径是否等于源目录或位于源目录内部。
+func isPathInsideOrSame(parent, child string) bool {
+	resolvedParent, err := filepath.Abs(parent)
+	if err != nil {
+		return false
+	}
+	resolvedChild, err := filepath.Abs(child)
+	if err != nil {
+		return false
+	}
+	return samePath(resolvedParent, resolvedChild) ||
+		strings.HasPrefix(withTrailingSep(resolvedChild), withTrailingSep(resolvedParent))
+}
+
 // withTrailingSep 为路径追加结尾分隔符，便于做前缀比较。
 func withTrailingSep(path string) string {
 	cleaned := filepath.Clean(path)
@@ -1829,15 +1863,15 @@ var (
 	// errPathTraversal 表示请求路径越过了允许的根目录边界。
 	errPathTraversal = appError{Status: http.StatusBadRequest, Message: "路径越权访问被拒绝"}
 	// errNoRootPath 表示当前没有可供操作的根目录配置。
-	errNoRootPath    = appError{Status: http.StatusBadRequest, Message: "未配置可用的根目录"}
+	errNoRootPath = appError{Status: http.StatusBadRequest, Message: "未配置可用的根目录"}
 	// errInvalidPath 表示路径格式本身无法被安全解析。
-	errInvalidPath   = appError{Status: http.StatusBadRequest, Message: "路径无效"}
+	errInvalidPath = appError{Status: http.StatusBadRequest, Message: "路径无效"}
 )
 
 // appError 表示带有 HTTP 状态码的业务错误。
 type appError struct {
 	// Status 表示最终返回给客户端的 HTTP 状态码。
-	Status  int
+	Status int
 	// Message 表示返回给客户端的错误提示语。
 	Message string
 }
