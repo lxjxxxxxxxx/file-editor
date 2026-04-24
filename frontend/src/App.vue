@@ -56,6 +56,7 @@
             @current-change="handleCurrentChange"
             @node-expand="handleNodeExpand"
             @node-collapse="handleNodeCollapse"
+            @node-contextmenu="handleNodeContextMenu"
             class="tree"
             ref="treeRef"
           >
@@ -104,6 +105,25 @@
           </el-tree>
         </el-scrollbar>
       </el-aside>
+
+      <div
+        v-if="contextMenuVisible && contextMenuOptions.length"
+        class="context-menu"
+        :style="{ left: contextMenuX + 'px', top: contextMenuY + 'px' }"
+        @click.stop
+        @contextmenu.prevent
+      >
+        <button
+          v-for="item in contextMenuOptions"
+          :key="item.key"
+          type="button"
+          class="context-menu-item"
+          @click="handleContextMenuAction(item)"
+        >
+          <el-icon><component :is="item.icon" /></el-icon>
+          <span>{{ item.label }}</span>
+        </button>
+      </div>
 
       <!-- 右侧编辑器区域 -->
       <el-main class="editor-area">
@@ -505,6 +525,24 @@ const targetTreeRef = ref(null)
 const selectedItemName = ref('')  // 当前选中的文件/目录名
 const operationType = ref('')     // 'copy' 或 'move'
 const targetTreeKey = ref(0)      // 用于强制重新渲染树组件
+
+// 文件树右键菜单
+const contextMenuVisible = ref(false)
+const contextMenuX = ref(0)
+const contextMenuY = ref(0)
+const contextMenuNode = ref(null)
+const contextMenuOptions = computed(() => {
+  const data = contextMenuNode.value
+  if (!data?.isDirectory) return []
+
+  return [
+    {
+      key: 'add-root',
+      label: '添加为常驻目录',
+      icon: Plus,
+    },
+  ]
+})
 
 function mapRootNodes(items) {
   return items.map(item => ({
@@ -977,11 +1015,100 @@ function formatSize(bytes) {
 
 // 判断选中的是文件还是目录
 function handleNodeClick(data) {
+  hideContextMenu()
   selectedPath.value = data.path
   selectedNodeData.value = data
   selectedRootIndex.value = data.rootIndex || 0
   if (data.isFile) {
     openFile(data.path, data.name, data.rootIndex || 0)
+  }
+}
+
+function hideContextMenu() {
+  contextMenuVisible.value = false
+  contextMenuNode.value = null
+}
+
+function handleNodeContextMenu(event, data) {
+  event.preventDefault()
+  event.stopPropagation()
+
+  contextMenuNode.value = data
+  selectedPath.value = data.path
+  selectedNodeData.value = data
+  selectedRootIndex.value = data.rootIndex || 0
+  treeRef.value?.setCurrentKey(data.treeKey)
+
+  if (!contextMenuOptions.value.length) {
+    contextMenuVisible.value = false
+    return
+  }
+
+  const menuWidth = 180
+  const menuHeight = contextMenuOptions.value.length * 34 + 8
+  contextMenuX.value = Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8))
+  contextMenuY.value = Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8))
+  contextMenuVisible.value = true
+}
+
+function joinAbsolutePath(basePath, relativePath) {
+  if (!relativePath) return basePath
+
+  const separator = basePath.includes('\\') ? '\\' : '/'
+  const cleanBase = basePath.replace(/[\\/]+$/, '')
+  const cleanRelative = relativePath.split('/').filter(Boolean).join(separator)
+  if (!cleanBase && /^[\\/]+$/.test(basePath)) {
+    return `${separator}${cleanRelative}`
+  }
+  return cleanBase ? `${cleanBase}${separator}${cleanRelative}` : cleanRelative
+}
+
+function getAbsolutePathForNode(data) {
+  if (!data) return ''
+  if (data.absPath) return data.absPath
+
+  const root = rootPaths.value.find(item => item.rootIndex === (data.rootIndex || 0))
+  if (!root?.absPath) return ''
+  return joinAbsolutePath(root.absPath, data.path || '')
+}
+
+function normalizePathForCompare(filePath) {
+  return filePath.replace(/[\\/]+$/, '').toLowerCase()
+}
+
+function isRootPathAlreadyAdded(filePath) {
+  const targetPath = normalizePathForCompare(filePath)
+  return rootPaths.value.some(item => normalizePathForCompare(item.absPath || item.path || '') === targetPath)
+}
+
+async function addContextDirectoryAsRoot() {
+  const data = contextMenuNode.value
+  hideContextMenu()
+  if (!data?.isDirectory) return
+
+  const directoryPath = getAbsolutePathForNode(data)
+  if (!directoryPath) {
+    ElMessage.error('无法获取目录绝对路径')
+    return
+  }
+
+  if (isRootPathAlreadyAdded(directoryPath)) {
+    ElMessage.info('该目录已是常驻目录')
+    return
+  }
+
+  const res = await api.addRoot(directoryPath)
+  if (res.success) {
+    ElMessage.success('已添加为常驻目录')
+    await refreshRootTree()
+  } else {
+    ElMessage.error('添加失败: ' + res.error)
+  }
+}
+
+function handleContextMenuAction(item) {
+  if (item.key === 'add-root') {
+    addContextDirectoryAsRoot()
   }
 }
 
@@ -1347,6 +1474,11 @@ async function handleSetPerm() {
 
 // Keyboard shortcut: Ctrl+S
 function onKeydown(e) {
+  if (e.key === 'Escape') {
+    hideContextMenu()
+    return
+  }
+
   if ((e.ctrlKey || e.metaKey) && e.key === 's') {
     e.preventDefault()
     if (activeTab.value && isModified.value) handleSave()
@@ -1453,10 +1585,12 @@ function showRootInfo(data) {
 onMounted(() => {
   refreshRootTree()
   window.addEventListener('keydown', onKeydown)
+  document.addEventListener('click', hideContextMenu)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
+  document.removeEventListener('click', hideContextMenu)
 })
 </script>
 
@@ -1721,6 +1855,43 @@ html, body, #app { height: 100%; overflow: hidden; }
 .root-alias {
   color: #409eff;
   font-weight: 500;
+}
+
+.context-menu {
+  position: fixed;
+  z-index: 3000;
+  min-width: 180px;
+  padding: 4px;
+  background: #252526;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.context-menu-item {
+  width: 100%;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #d4d4d4;
+  font-size: 13px;
+  line-height: 32px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.context-menu-item:hover {
+  background: #094771;
+  color: #fff;
+}
+
+.context-menu-item .el-icon {
+  font-size: 14px;
 }
 
 .editor-area {
