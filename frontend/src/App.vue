@@ -215,6 +215,26 @@
       </template>
     </el-dialog>
 
+    <!-- 重命名对话框 -->
+    <el-dialog v-model="renameDialogVisible" title="重命名" width="450px">
+      <el-form>
+        <el-form-item label="当前位置">
+          <el-input :model-value="renameTargetPath" disabled />
+        </el-form-item>
+        <el-form-item label="新名称">
+          <el-input
+            v-model="renameInput"
+            placeholder="请输入新的文件或目录名称"
+            @keyup.enter="handleRename"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="renameDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleRename">确认重命名</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 复制对话框 -->
     <el-dialog v-model="copyDialogVisible" title="复制" width="550px">
       <el-form>
@@ -496,6 +516,11 @@ const newType = ref('file')
 const newPath = ref('')
 const newParentPath = ref('')
 const newRootIndex = ref(0)
+const renameDialogVisible = ref(false)
+const renameInput = ref('')
+const renameTargetPath = ref('')
+const renameTargetRootIndex = ref(0)
+const renameTargetIsDirectory = ref(false)
 const copyDialogVisible = ref(false)
 const copyTarget = ref('')
 const copyTargetRootIndex = ref(0)  // 目标根目录索引
@@ -544,6 +569,8 @@ const contextMenuOptions = computed(() => {
 
   if (data.isFile) {
     return [
+      { key: 'rename', label: '重命名', icon: Edit },
+      { key: 'duplicate', label: '创建副本', icon: CopyDocument },
       { key: 'delete', label: '删除', icon: Delete },
       { key: 'copy', label: '复制', icon: CopyDocument },
       { key: 'move', label: '移动', icon: Position },
@@ -560,6 +587,8 @@ const contextMenuOptions = computed(() => {
 
   if (!data.isRoot) {
     options.push(
+      { key: 'rename', label: '重命名', icon: Edit },
+      { key: 'duplicate', label: '创建副本', icon: CopyDocument },
       { key: 'delete', label: '删除', icon: Delete },
       { key: 'copy', label: '复制', icon: CopyDocument },
       { key: 'move', label: '移动', icon: Position },
@@ -1152,6 +1181,10 @@ async function handleContextMenuAction(item) {
     showNewDialog('directory', data)
   } else if (item.key === 'refresh') {
     await refreshTree(data.treeKey)
+  } else if (item.key === 'rename') {
+    showRenameDialog(data)
+  } else if (item.key === 'duplicate') {
+    await createBackupCopy(data)
   } else if (item.key === 'delete') {
     await handleDeleteItem(data)
   } else if (item.key === 'copy') {
@@ -1195,6 +1228,79 @@ function showNewDialog(type, sourceNode = selectedNodeData.value) {
     newPath.value = ''
   }
   newDialogVisible.value = true
+}
+
+function isValidItemName(name) {
+  return !!name && name !== '.' && name !== '..' && !/[\\/]/.test(name)
+}
+
+function getItemName(filePath) {
+  return filePath.split('/').filter(Boolean).pop() || ''
+}
+
+function joinRelativePath(parentPath, itemName) {
+  return parentPath ? `${parentPath}/${itemName}` : itemName
+}
+
+function showRenameDialog(sourceNode = selectedNodeData.value) {
+  const node = sourceNode || null
+  if (!node?.path || node.isRoot) return
+
+  selectTreeNode(node)
+  renameTargetPath.value = node.path
+  renameTargetRootIndex.value = getNodeRootIndex(node)
+  renameTargetIsDirectory.value = !!node.isDirectory
+  renameInput.value = getItemName(node.path)
+  renameDialogVisible.value = true
+}
+
+async function refreshParentAfterPathChange(sourcePath, rootIndex, nextPath = '') {
+  const keys = [getTreeKeyForPath(getParentPath(sourcePath), rootIndex)]
+  if (nextPath) {
+    keys.push(getTreeKeyForPath(getParentPath(nextPath), rootIndex))
+  }
+  await refreshNodeKeys(keys)
+}
+
+async function handleRename() {
+  const newName = renameInput.value.trim()
+  if (!isValidItemName(newName)) {
+    ElMessage.warning('请输入有效名称，不能包含 / 或 \\')
+    return
+  }
+
+  const sourcePath = renameTargetPath.value
+  const rootIndex = renameTargetRootIndex.value
+  const parentPath = getParentPath(sourcePath)
+  const targetPath = joinRelativePath(parentPath, newName)
+  if (targetPath === sourcePath) {
+    renameDialogVisible.value = false
+    return
+  }
+
+  const statRes = await api.getStat(targetPath, rootIndex)
+  if (statRes.success) {
+    ElMessage.error('目标名称已存在')
+    return
+  }
+
+  const res = await api.moveFile(sourcePath, targetPath, rootIndex, rootIndex)
+  if (res.success) {
+    ElMessage.success('重命名成功')
+    renameDialogVisible.value = false
+    updateOpenTabsAfterMove(sourcePath, targetPath, rootIndex, rootIndex)
+    if (renameTargetIsDirectory.value) {
+      removeExpandedKeyBranch(getTreeKeyForPath(sourcePath, rootIndex))
+    }
+    selectedPath.value = targetPath
+    selectedRootIndex.value = rootIndex
+    selectedNodeData.value = null
+    await refreshParentAfterPathChange(sourcePath, rootIndex)
+    await nextTick()
+    treeRef.value?.setCurrentKey(getTreeKeyForPath(targetPath, rootIndex))
+  } else {
+    ElMessage.error('重命名失败: ' + res.error)
+  }
 }
 
 async function handleCreate() {
@@ -1567,6 +1673,51 @@ async function generateUniqueTargetPath(targetDir, itemName, rootIndex = 0) {
   } while (counter < 1000)
 
   return null
+}
+
+function getBackupName(data) {
+  const itemName = getItemName(data.path)
+  return data.isDirectory ? `${itemName}_backup` : `${itemName}.backup`
+}
+
+async function generateUniqueBackupPath(basePath, rootIndex) {
+  let candidate = basePath
+  let counter = 1
+
+  while (counter < 1000) {
+    const res = await api.getStat(candidate, rootIndex)
+    if (!res.success) {
+      return candidate
+    }
+    candidate = `${basePath}(${counter})`
+    counter++
+  }
+
+  return null
+}
+
+async function createBackupCopy(sourceNode) {
+  const node = sourceNode || null
+  if (!node?.path || node.isRoot) return
+
+  const rootIndex = getNodeRootIndex(node)
+  const sourcePath = node.path
+  const parentPath = getParentPath(sourcePath)
+  const backupName = getBackupName(node)
+  const baseTargetPath = joinRelativePath(parentPath, backupName)
+  const targetPath = await generateUniqueBackupPath(baseTargetPath, rootIndex)
+  if (!targetPath) {
+    ElMessage.error('无法生成副本名称')
+    return
+  }
+
+  const res = await api.copyFile(sourcePath, targetPath, rootIndex, rootIndex)
+  if (res.success) {
+    ElMessage.success(`已创建副本: ${getItemName(targetPath)}`)
+    await refreshParentAfterPathChange(sourcePath, rootIndex, targetPath)
+  } else {
+    ElMessage.error('创建副本失败: ' + res.error)
+  }
 }
 
 // Permissions
