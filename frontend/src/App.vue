@@ -815,6 +815,25 @@ async function openFile(filePath, fileName, rootIndex = 0) {
   activeTab.value = tabKey
 }
 
+function closeUnloadedTab(tabKey) {
+  const { rootIndex, path: filePath } = parseActiveTab(tabKey)
+  const index = openTabs.value.findIndex(tab => tab.path === filePath && tab.rootIndex === rootIndex)
+  if (index === -1 || openTabs.value[index].isLoaded) return
+
+  const nextTab = activeTab.value === tabKey
+    ? openTabs.value[index - 1] || openTabs.value[index + 1] || null
+    : null
+
+  openTabs.value.splice(index, 1)
+
+  if (activeTab.value === tabKey) {
+    activeTab.value = nextTab ? makeTabKey(nextTab.rootIndex, nextTab.path) : ''
+    if (!activeTab.value) {
+      syncEditorWithTab(null)
+    }
+  }
+}
+
 async function loadFileContent(tabKey, forceText = false) {
   const tab = getTabRecord(tabKey)
   if (!tab) return
@@ -825,7 +844,10 @@ async function loadFileContent(tabKey, forceText = false) {
   }
 
   const { rootIndex, path: filePath } = parseActiveTab(tabKey)
-  if (!filePath) return
+  if (!filePath) {
+    closeUnloadedTab(tabKey)
+    return
+  }
 
   fileLoading.value = true
   fileLoadingPath.value = filePath
@@ -871,10 +893,12 @@ async function loadFileContent(tabKey, forceText = false) {
         await loadFileContent(tabKey, true)
         return
       } catch {
+        closeUnloadedTab(tabKey)
         return
       }
     }
     ElMessage.error('读取失败: ' + res.error)
+    closeUnloadedTab(tabKey)
   }
 }
 
