@@ -495,6 +495,7 @@ const newDialogVisible = ref(false)
 const newType = ref('file')
 const newPath = ref('')
 const newParentPath = ref('')
+const newRootIndex = ref(0)
 const copyDialogVisible = ref(false)
 const copyTarget = ref('')
 const copyTargetRootIndex = ref(0)  // 目标根目录索引
@@ -504,6 +505,8 @@ const moveTargetRootIndex = ref(0)  // 目标根目录索引
 const permDialogVisible = ref(false)
 const fileStat = ref(null)
 const permInput = ref('')
+const permTargetPath = ref('')
+const permTargetRootIndex = ref(0)
 
 // 复制/移动目标路径显示
 const copyTargetDisplay = computed(() => {
@@ -525,6 +528,10 @@ const targetTreeRef = ref(null)
 const selectedItemName = ref('')  // 当前选中的文件/目录名
 const operationType = ref('')     // 'copy' 或 'move'
 const targetTreeKey = ref(0)      // 用于强制重新渲染树组件
+const operationSourcePath = ref('')
+const operationSourceRootIndex = ref(0)
+const operationSourceIsDirectory = ref(false)
+const operationSourceTreeKey = ref('')
 
 // 文件树右键菜单
 const contextMenuVisible = ref(false)
@@ -533,15 +540,40 @@ const contextMenuY = ref(0)
 const contextMenuNode = ref(null)
 const contextMenuOptions = computed(() => {
   const data = contextMenuNode.value
-  if (!data?.isDirectory) return []
+  if (!data) return []
 
-  return [
-    {
-      key: 'add-root',
-      label: '添加为常驻目录',
-      icon: Plus,
-    },
+  if (data.isFile) {
+    return [
+      { key: 'delete', label: '删除', icon: Delete },
+      { key: 'copy', label: '复制', icon: CopyDocument },
+      { key: 'move', label: '移动', icon: Position },
+      { key: 'permissions', label: '权限', icon: Lock },
+    ]
+  }
+
+  if (!data.isDirectory) return []
+
+  const options = [
+    { key: 'new-file', label: '新建文件', icon: DocumentAdd },
+    { key: 'new-directory', label: '新建目录', icon: FolderAdd },
   ]
+
+  if (!data.isRoot) {
+    options.push(
+      { key: 'delete', label: '删除', icon: Delete },
+      { key: 'copy', label: '复制', icon: CopyDocument },
+      { key: 'move', label: '移动', icon: Position },
+      { key: 'permissions', label: '权限', icon: Lock },
+    )
+  }
+
+  options.push({ key: 'refresh', label: '刷新', icon: Refresh })
+
+  if (!data.isRoot) {
+    options.push({ key: 'add-root', label: '添加为常驻目录', icon: Plus })
+  }
+
+  return options
 })
 
 function mapRootNodes(items) {
@@ -827,9 +859,7 @@ async function refreshTree(treeKey = null) {
 
 function handleCurrentChange(data) {
   if (data) {
-    selectedPath.value = data.path
-    selectedNodeData.value = data
-    selectedRootIndex.value = data.rootIndex || 0
+    selectTreeNode(data)
   } else {
     selectedPath.value = ''
     selectedNodeData.value = null
@@ -1013,14 +1043,23 @@ function formatSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
 }
 
+function getNodeRootIndex(data) {
+  return Number.isInteger(data?.rootIndex) ? data.rootIndex : 0
+}
+
+function selectTreeNode(data) {
+  if (!data) return
+  selectedPath.value = data.path
+  selectedNodeData.value = data
+  selectedRootIndex.value = getNodeRootIndex(data)
+}
+
 // 判断选中的是文件还是目录
 function handleNodeClick(data) {
   hideContextMenu()
-  selectedPath.value = data.path
-  selectedNodeData.value = data
-  selectedRootIndex.value = data.rootIndex || 0
+  selectTreeNode(data)
   if (data.isFile) {
-    openFile(data.path, data.name, data.rootIndex || 0)
+    openFile(data.path, data.name, getNodeRootIndex(data))
   }
 }
 
@@ -1034,9 +1073,7 @@ function handleNodeContextMenu(event, data) {
   event.stopPropagation()
 
   contextMenuNode.value = data
-  selectedPath.value = data.path
-  selectedNodeData.value = data
-  selectedRootIndex.value = data.rootIndex || 0
+  selectTreeNode(data)
   treeRef.value?.setCurrentKey(data.treeKey)
 
   if (!contextMenuOptions.value.length) {
@@ -1081,9 +1118,7 @@ function isRootPathAlreadyAdded(filePath) {
   return rootPaths.value.some(item => normalizePathForCompare(item.absPath || item.path || '') === targetPath)
 }
 
-async function addContextDirectoryAsRoot() {
-  const data = contextMenuNode.value
-  hideContextMenu()
+async function addDirectoryAsRoot(data) {
   if (!data?.isDirectory) return
 
   const directoryPath = getAbsolutePathForNode(data)
@@ -1106,22 +1141,48 @@ async function addContextDirectoryAsRoot() {
   }
 }
 
-function handleContextMenuAction(item) {
-  if (item.key === 'add-root') {
-    addContextDirectoryAsRoot()
+async function handleContextMenuAction(item) {
+  const data = contextMenuNode.value
+  hideContextMenu()
+  if (!data) return
+
+  if (item.key === 'new-file') {
+    showNewDialog('file', data)
+  } else if (item.key === 'new-directory') {
+    showNewDialog('directory', data)
+  } else if (item.key === 'refresh') {
+    await refreshTree(data.treeKey)
+  } else if (item.key === 'delete') {
+    await handleDeleteItem(data)
+  } else if (item.key === 'copy') {
+    showCopyDialog(data)
+  } else if (item.key === 'move') {
+    showMoveDialog(data)
+  } else if (item.key === 'permissions') {
+    await showPermDialog(data)
+  } else if (item.key === 'add-root') {
+    await addDirectoryAsRoot(data)
   }
 }
 
 // New dialog
-function showNewDialog(type) {
+function showNewDialog(type, sourceNode = selectedNodeData.value) {
   newType.value = type
-  const sel = selectedPath.value
-  
-  if (sel && selectedNodeData.value?.isDirectory) {
+  const node = sourceNode || null
+  const sel = node?.path || ''
+
+  if (node) {
+    selectTreeNode(node)
+    newRootIndex.value = getNodeRootIndex(node)
+  } else {
+    newRootIndex.value = selectedRootIndex.value
+  }
+
+  if (node?.isDirectory) {
     // 选了目录 → 在这个目录下创建
-    newParentPath.value = sel
+    newParentPath.value = sel || '(根目录)'
     newPath.value = ''  // 只需输入名称
-  } else if (sel && selectedNodeData.value?.isFile) {
+  } else if (node?.isFile) {
     // 选了文件 → 在同目录下创建
     const parts = sel.split('/')
     parts.pop()
@@ -1149,26 +1210,30 @@ async function handleCreate() {
     fullPath = name
   }
 
-  const res = await api.createItem(fullPath, newType.value, selectedRootIndex.value)
+  const rootIndex = newRootIndex.value
+  const res = await api.createItem(fullPath, newType.value, rootIndex)
   if (res.success) {
     ElMessage.success('创建成功')
     newDialogVisible.value = false
-    await refreshTree(getTreeKeyForPath(newParentPath.value === '(根目录)' ? '' : newParentPath.value, selectedRootIndex.value))
+    await refreshTree(getTreeKeyForPath(newParentPath.value === '(根目录)' ? '' : newParentPath.value, rootIndex))
   } else {
     ElMessage.error('创建失败: ' + res.error)
   }
 }
 
 // Delete
-async function handleDeleteItem() {
-  if (!selectedPath.value) return
+async function handleDeleteItem(sourceNode = selectedNodeData.value) {
+  const node = sourceNode || null
+  if (!node?.path || node.isRoot) return
+
+  const deletedPath = node.path
+  const rootIdx = getNodeRootIndex(node)
+
   try {
-    await ElMessageBox.confirm(`确定删除 ${selectedPath.value}？此操作不可撤销！`, '确认删除', { type: 'warning' })
+    await ElMessageBox.confirm(`确定删除 ${deletedPath}？此操作不可撤销！`, '确认删除', { type: 'warning' })
   } catch { return }
 
   // 保存父目录路径和根目录索引，用于删除后刷新
-  const deletedPath = selectedPath.value
-  const rootIdx = selectedRootIndex.value
   const deletedTreeKey = getTreeKeyForPath(deletedPath, rootIdx)
   const parentPath = getParentPath(deletedPath)
   const parentTreeKey = getTreeKeyForPath(parentPath, rootIdx)
@@ -1178,23 +1243,24 @@ async function handleDeleteItem() {
     ElMessage.success('删除成功')
     // Close tab if open
     const deletedTabKey = makeTabKey(rootIdx, deletedPath)
-    const idx = openTabs.value.findIndex(t => t.path === deletedPath && t.rootIndex === rootIdx)
-    if (idx >= 0) {
-      openTabs.value.splice(idx, 1)
-      if (activeTab.value === deletedTabKey) {
-        const firstTab = openTabs.value[0]
-        activeTab.value = firstTab ? makeTabKey(firstTab.rootIndex, firstTab.path) : ''
-        if (!activeTab.value) {
-          currentFileStat.value = null
-          editorContent.value = ''
-        }
+    const isDeletedTab = (tab) => tab.rootIndex === rootIdx && (tab.path === deletedPath || tab.path.startsWith(deletedPath + '/'))
+    const shouldResetActiveTab = openTabs.value.some(tab => isDeletedTab(tab) && activeTab.value === makeTabKey(tab.rootIndex, tab.path))
+    openTabs.value = openTabs.value.filter(tab => !isDeletedTab(tab))
+    if (shouldResetActiveTab || activeTab.value === deletedTabKey) {
+      const firstTab = openTabs.value[0]
+      activeTab.value = firstTab ? makeTabKey(firstTab.rootIndex, firstTab.path) : ''
+      if (!activeTab.value) {
+        currentFileStat.value = null
+        editorContent.value = ''
       }
     }
 
     // 清空选中状态
-    selectedPath.value = ''
-    selectedNodeData.value = null
-    selectedRootIndex.value = 0
+    if (selectedRootIndex.value === rootIdx && (selectedPath.value === deletedPath || selectedPath.value.startsWith(deletedPath + '/'))) {
+      selectedPath.value = ''
+      selectedNodeData.value = null
+      selectedRootIndex.value = 0
+    }
     removeExpandedKeyBranch(deletedTreeKey)
 
     // 刷新父目录（如果父目录存在），否则刷新根目录
@@ -1216,13 +1282,20 @@ async function handleDeleteItem() {
 const sourceRootIndex = ref(0)  // 源文件所在的根目录索引
 const hasSelectedTarget = ref(false)  // 是否已选择目标目录
 
-function showCopyDialog() {
-  operationType.value = 'copy'
-  copyTarget.value = ''
-  copyTargetRootIndex.value = 0
+function prepareTransferDialog(type, sourceNode) {
+  const node = sourceNode || selectedNodeData.value
+  if (!node?.path || node.isRoot) return false
+
+  const rootIndex = getNodeRootIndex(node)
+  operationType.value = type
   hasSelectedTarget.value = false
-  sourceRootIndex.value = selectedRootIndex.value
-  selectedItemName.value = selectedPath.value ? selectedPath.value.split('/').pop() : ''
+  sourceRootIndex.value = rootIndex
+  operationSourcePath.value = node.path
+  operationSourceRootIndex.value = rootIndex
+  operationSourceIsDirectory.value = !!node.isDirectory
+  operationSourceTreeKey.value = node.treeKey || getTreeKeyForPath(node.path, rootIndex)
+  selectedItemName.value = node.path.split('/').pop()
+  selectTreeNode(node)
   // 直接使用 rootPaths 作为目标树的根数据
   targetTreeData.value = rootPaths.value.map(r => ({
     ...r,
@@ -1230,15 +1303,44 @@ function showCopyDialog() {
     children: []
   }))
   targetTreeKey.value++  // 强制重新渲染树组件
+  return true
+}
+
+function showCopyDialog(sourceNode = selectedNodeData.value) {
+  copyTarget.value = ''
+  copyTargetRootIndex.value = 0
+  if (!prepareTransferDialog('copy', sourceNode)) return
   copyDialogVisible.value = true
+}
+
+function normalizeRelativePathForCompare(filePath) {
+  return filePath.split('/').filter(Boolean).join('/')
+}
+
+function isTargetDirInsideSource(targetDir, targetRoot) {
+  if (!operationSourceIsDirectory.value || operationSourceRootIndex.value !== targetRoot) {
+    return false
+  }
+
+  const sourcePath = normalizeRelativePathForCompare(operationSourcePath.value)
+  const targetPath = normalizeRelativePathForCompare(targetDir)
+  return !!sourcePath && (targetPath === sourcePath || targetPath.startsWith(sourcePath + '/'))
+}
+
+function validateTransferTargetDir(targetDir, targetRoot, actionName) {
+  if (!isTargetDirInsideSource(targetDir, targetRoot)) return true
+  ElMessage.warning(`不能${actionName}目录到自身或其子目录中`)
+  return false
 }
 
 async function handleCopy() {
   if (!hasSelectedTarget.value) { ElMessage.warning('请选择目标目录'); return }
 
   const targetPath = copyTarget.value ? copyTarget.value + '/' + selectedItemName.value : selectedItemName.value
-  const fromRoot = sourceRootIndex.value
+  const sourcePath = operationSourcePath.value
+  const fromRoot = operationSourceRootIndex.value
   const toRoot = copyTargetRootIndex.value
+  if (!sourcePath || !validateTransferTargetDir(copyTarget.value, toRoot, '复制')) return
 
   // 检查目标是否已存在
   const statRes = await api.getStat(targetPath, toRoot)
@@ -1265,7 +1367,7 @@ async function handleCopy() {
       return
     }
 
-    const res = await api.copyFile(selectedPath.value, uniquePath, fromRoot, toRoot)
+    const res = await api.copyFile(sourcePath, uniquePath, fromRoot, toRoot)
     if (res.success) {
       ElMessage.success('复制成功（已重命名）')
       copyDialogVisible.value = false
@@ -1274,7 +1376,7 @@ async function handleCopy() {
       ElMessage.error('复制失败: ' + res.error)
     }
   } else {
-    const res = await api.copyFile(selectedPath.value, targetPath, fromRoot, toRoot)
+    const res = await api.copyFile(sourcePath, targetPath, fromRoot, toRoot)
     if (res.success) {
       ElMessage.success('复制成功')
       copyDialogVisible.value = false
@@ -1286,30 +1388,48 @@ async function handleCopy() {
 }
 
 // Move
-function showMoveDialog() {
-  operationType.value = 'move'
+function showMoveDialog(sourceNode = selectedNodeData.value) {
   moveTarget.value = ''
   moveTargetRootIndex.value = 0
-  hasSelectedTarget.value = false
-  sourceRootIndex.value = selectedRootIndex.value
-  selectedItemName.value = selectedPath.value ? selectedPath.value.split('/').pop() : ''
-  // 直接使用 rootPaths 作为目标树的根数据
-  targetTreeData.value = rootPaths.value.map(r => ({
-    ...r,
-    treeKey: `root-${r.rootIndex}`,
-    children: []
-  }))
-  targetTreeKey.value++  // 强制重新渲染树组件
+  if (!prepareTransferDialog('move', sourceNode)) return
   moveDialogVisible.value = true
+}
+
+function updateOpenTabsAfterMove(sourcePath, targetPath, fromRoot, toRoot) {
+  const active = parseActiveTab(activeTab.value)
+  let nextActiveTab = activeTab.value
+
+  openTabs.value = openTabs.value.map(tab => {
+    if (tab.rootIndex !== fromRoot || (tab.path !== sourcePath && !tab.path.startsWith(sourcePath + '/'))) {
+      return tab
+    }
+
+    const suffix = tab.path === sourcePath ? '' : tab.path.slice(sourcePath.length)
+    const nextPath = targetPath + suffix
+    if (active.path === tab.path && active.rootIndex === tab.rootIndex) {
+      nextActiveTab = makeTabKey(toRoot, nextPath)
+    }
+    return {
+      ...tab,
+      path: nextPath,
+      name: nextPath.split('/').pop(),
+      rootIndex: toRoot,
+    }
+  })
+
+  if (nextActiveTab !== activeTab.value) {
+    activeTab.value = nextActiveTab
+  }
 }
 
 async function handleMove() {
   if (!hasSelectedTarget.value) { ElMessage.warning('请选择目标目录'); return }
 
-  const sourcePath = selectedPath.value
+  const sourcePath = operationSourcePath.value
   const targetPath = moveTarget.value ? moveTarget.value + '/' + selectedItemName.value : selectedItemName.value
-  const fromRoot = sourceRootIndex.value
+  const fromRoot = operationSourceRootIndex.value
   const toRoot = moveTargetRootIndex.value
+  if (!sourcePath || !validateTransferTargetDir(moveTarget.value, toRoot, '移动')) return
 
   // 检查目标是否已存在
   const statRes = await api.getStat(targetPath, toRoot)
@@ -1340,14 +1460,13 @@ async function handleMove() {
     if (res.success) {
       ElMessage.success('移动成功（已重命名）')
       moveDialogVisible.value = false
-      // Update tab path
-      const tab = openTabs.value.find(t => t.path === sourcePath && t.rootIndex === fromRoot)
-      if (tab) {
-        const idx = openTabs.value.indexOf(tab)
-        openTabs.value[idx] = { path: uniquePath, name: uniquePath.split('/').pop(), rootIndex: toRoot }
-        if (activeTab.value === makeTabKey(fromRoot, sourcePath)) activeTab.value = makeTabKey(toRoot, uniquePath)
+      updateOpenTabsAfterMove(sourcePath, uniquePath, fromRoot, toRoot)
+      if (selectedRootIndex.value === fromRoot && (selectedPath.value === sourcePath || selectedPath.value.startsWith(sourcePath + '/'))) {
+        selectedPath.value = ''
+        selectedNodeData.value = null
+        selectedRootIndex.value = 0
       }
-      selectedPath.value = ''
+      removeExpandedKeyBranch(operationSourceTreeKey.value)
       await refreshNodeKeys([
         getTreeKeyForPath(getParentPath(sourcePath), fromRoot),
         getTreeKeyForPath(moveTarget.value, toRoot),
@@ -1360,14 +1479,13 @@ async function handleMove() {
     if (res.success) {
       ElMessage.success('移动成功')
       moveDialogVisible.value = false
-      // Update tab path
-      const tab = openTabs.value.find(t => t.path === sourcePath && t.rootIndex === fromRoot)
-      if (tab) {
-        const idx = openTabs.value.indexOf(tab)
-        openTabs.value[idx] = { path: targetPath, name: targetPath.split('/').pop(), rootIndex: toRoot }
-        if (activeTab.value === makeTabKey(fromRoot, sourcePath)) activeTab.value = makeTabKey(toRoot, targetPath)
+      updateOpenTabsAfterMove(sourcePath, targetPath, fromRoot, toRoot)
+      if (selectedRootIndex.value === fromRoot && (selectedPath.value === sourcePath || selectedPath.value.startsWith(sourcePath + '/'))) {
+        selectedPath.value = ''
+        selectedNodeData.value = null
+        selectedRootIndex.value = 0
       }
-      selectedPath.value = ''
+      removeExpandedKeyBranch(operationSourceTreeKey.value)
       await refreshNodeKeys([
         getTreeKeyForPath(getParentPath(sourcePath), fromRoot),
         getTreeKeyForPath(moveTarget.value, toRoot),
@@ -1407,13 +1525,19 @@ async function loadTargetNode(node, resolve) {
 // 选择目标目录
 function handleTargetSelect(data) {
   if (data.isDirectory) {
+    const rootIndex = getNodeRootIndex(data)
+    const actionName = operationType.value === 'move' ? '移动' : '复制'
+    if (!validateTransferTargetDir(data.path || '', rootIndex, actionName)) {
+      return
+    }
+
     if (operationType.value === 'copy') {
       copyTarget.value = data.path
-      copyTargetRootIndex.value = data.rootIndex || 0
+      copyTargetRootIndex.value = rootIndex
       hasSelectedTarget.value = true
     } else if (operationType.value === 'move') {
       moveTarget.value = data.path
-      moveTargetRootIndex.value = data.rootIndex || 0
+      moveTargetRootIndex.value = rootIndex
       hasSelectedTarget.value = true
     }
   }
@@ -1446,11 +1570,18 @@ async function generateUniqueTargetPath(targetDir, itemName, rootIndex = 0) {
 }
 
 // Permissions
-async function showPermDialog() {
-  const res = await api.getStat(selectedPath.value, selectedRootIndex.value)
+async function showPermDialog(sourceNode = selectedNodeData.value) {
+  const node = sourceNode || null
+  if (!node?.path || node.isRoot) return
+
+  const rootIndex = getNodeRootIndex(node)
+  selectTreeNode(node)
+  const res = await api.getStat(node.path, rootIndex)
   if (res.success) {
     fileStat.value = res.data
     permInput.value = res.data.mode
+    permTargetPath.value = node.path
+    permTargetRootIndex.value = rootIndex
     permDialogVisible.value = true
   }
 }
@@ -1460,11 +1591,11 @@ async function handleSetPerm() {
     ElMessage.warning('请输入有效的八进制权限')
     return
   }
-  const res = await api.setPerm(selectedPath.value, permInput.value, selectedRootIndex.value)
+  const res = await api.setPerm(permTargetPath.value, permInput.value, permTargetRootIndex.value)
   if (res.success) {
     ElMessage.success('权限已修改: ' + permInput.value)
     permDialogVisible.value = false
-    if (currentFileStat.value && currentFileStat.value.path === selectedPath.value) {
+    if (currentFileStat.value && currentFileStat.value.path === permTargetPath.value) {
       currentFileStat.value.mode = permInput.value.padStart(3, '0')
     }
   } else {
