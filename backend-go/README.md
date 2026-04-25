@@ -5,8 +5,11 @@
 ## 目录说明
 
 - `main.go`: 服务入口
-- `config.example.json`: 配置示例
+- `file_identity_linux.go`: Linux 下解析 UID/GID、用户名和组名
+- `file_identity_windows.go`: Windows 下解析所有者、所属组和 SID
+- `file_identity_other.go`: 其他平台身份信息回退
 - `go.mod`: Go 模块定义
+- `dist/`: 前端生产构建产物目录，存在时由 Go 后端托管
 
 ## 配置
 
@@ -43,6 +46,8 @@
 - `binaryExtensions`: 明确按二进制文件处理的扩展名列表。
 - `binaryFileNames`: 明确按二进制文件处理的文件名列表。
 
+常驻目录相关接口会把新增、删除、别名修改写回 `config.json`。
+
 文本文件识别策略：
 
 - 后端默认优先按文件内容判断是否为文本，而不是只依赖扩展名。
@@ -74,6 +79,45 @@
 cd backend-go
 go run .
 ```
+
+前端开发模式默认运行在 `http://localhost:5174`，并通过 Vite 代理访问 `http://localhost:3002/api`。
+
+生产模式下，将前端构建产物输出到 `backend-go/dist` 后，Go 后端会直接托管前端页面和 API。
+
+## API 概览
+
+所有 `/api` 接口都需要 token，可通过 URL 参数 `token` 或请求头 `X-Auth-Token` 提供。
+
+| 接口 | 方法 | 说明 |
+| --- | --- | --- |
+| `/api/files/tree` | GET | 获取常驻根目录列表或指定目录子节点。 |
+| `/api/files/content` | GET | 读取文本文件内容，支持 `forceText=true`。 |
+| `/api/files/save` | POST | 保存文本文件内容。 |
+| `/api/files/create` | POST | 创建空文件或目录。 |
+| `/api/files/delete` | DELETE | 删除文件或目录。 |
+| `/api/files/copy` | POST | 复制文件或目录。 |
+| `/api/files/move` | POST | 移动文件或目录，跨设备时会复制后删除。 |
+| `/api/files/stat` | GET | 获取文件、目录或根目录详细信息。 |
+| `/api/files/permissions` | POST | 修改权限位。 |
+| `/api/roots` | GET/POST/PUT/DELETE | 查询、添加、修改别名、移除常驻目录。 |
+
+`/api/files/stat` 会返回基础元数据和平台身份信息：
+
+- Linux：UID、GID，并尽量解析用户名和组名。
+- Windows：所有者、所属组和 SID。
+- 其他平台：返回平台标识，不伪造身份信息。
+
+`path=""` 可用于查询指定 `rootIndex` 对应的常驻根目录自身信息。
+
+## 安全边界
+
+- 路径会被解析并限制在对应常驻根目录内，越权路径会被拒绝。
+- 单文件在线编辑限制为 2MB。
+- JSON 请求体限制为 10MB，并拒绝未知字段。
+- 非文本文件默认拒绝读取，前端可在用户确认后传入 `forceText=true` 强制按文本打开。
+- 创建文件和复制文件使用排他创建，默认不会覆盖已有目标。
+- 复制或移动目录时，禁止目标为源目录自身或其子目录。
+- `/api/roots` 只修改常驻目录配置，不删除真实目录。
 
 ## 安装为 systemd 服务
 
