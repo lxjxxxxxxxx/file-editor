@@ -231,10 +231,31 @@ type fileStatData struct {
 	Mode string `json:"mode"`
 	// Mtime 表示格式化后的修改时间。
 	Mtime string `json:"mtime"`
-	// UID 表示文件所有者 ID，目前跨平台统一返回 0。
+	// UID 表示 Linux 下的文件所有者 ID；Windows 下保留为 0。
 	UID int `json:"uid"`
-	// GID 表示文件所属组 ID，目前跨平台统一返回 0。
+	// GID 表示 Linux 下的文件所属组 ID；Windows 下保留为 0。
 	GID int `json:"gid"`
+	// IdentityPlatform 表示身份信息来源平台，如 linux 或 windows。
+	IdentityPlatform string `json:"identityPlatform"`
+	// Owner 表示解析出的所有者名称。
+	Owner string `json:"owner,omitempty"`
+	// Group 表示解析出的所属组名称。
+	Group string `json:"group,omitempty"`
+	// OwnerID 表示平台相关的所有者标识，Linux 为 UID，Windows 为 SID。
+	OwnerID string `json:"ownerId,omitempty"`
+	// GroupID 表示平台相关的所属组标识，Linux 为 GID，Windows 为 SID。
+	GroupID string `json:"groupId,omitempty"`
+}
+
+// fileIdentityData 表示按平台解析出的文件身份信息。
+type fileIdentityData struct {
+	UID              int
+	GID              int
+	IdentityPlatform string
+	Owner            string
+	Group            string
+	OwnerID          string
+	GroupID          string
 }
 
 // app 表示整个后端服务的运行时状态。
@@ -987,10 +1008,6 @@ func (a *app) handleFilesStat(w http.ResponseWriter, r *http.Request) {
 
 	filePath := r.URL.Query().Get("path")
 	rootIndex := parseRootIndexFromQuery(r)
-	if filePath == "" {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "缺少 path"})
-		return
-	}
 
 	real, err := a.resolvePath(filePath, rootIndex)
 	if err != nil {
@@ -1004,18 +1021,31 @@ func (a *app) handleFilesStat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	name := filepath.Base(filePath)
+	if filePath == "" {
+		name = filepath.Base(real)
+		if name == "." || name == string(os.PathSeparator) || name == "" {
+			name = real
+		}
+	}
+	identity := getFileIdentity(real, stat)
 	writeJSON(w, http.StatusOK, apiResponse{
 		Success: true,
 		Data: fileStatData{
-			Name:        filepath.Base(filePath),
-			Path:        filePath,
-			IsFile:      !stat.IsDir(),
-			IsDirectory: stat.IsDir(),
-			Size:        stat.Size(),
-			Mode:        formatMode(stat.Mode()),
-			Mtime:       stat.ModTime().Format("2006-01-02 15:04:05"),
-			UID:         0,
-			GID:         0,
+			Name:             name,
+			Path:             filePath,
+			IsFile:           !stat.IsDir(),
+			IsDirectory:      stat.IsDir(),
+			Size:             stat.Size(),
+			Mode:             formatMode(stat.Mode()),
+			Mtime:            stat.ModTime().Format("2006-01-02 15:04:05"),
+			UID:              identity.UID,
+			GID:              identity.GID,
+			IdentityPlatform: identity.IdentityPlatform,
+			Owner:            identity.Owner,
+			Group:            identity.Group,
+			OwnerID:          identity.OwnerID,
+			GroupID:          identity.GroupID,
 		},
 	})
 }

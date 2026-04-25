@@ -343,6 +343,96 @@
       </template>
     </el-dialog>
 
+    <!-- 详细信息对话框 -->
+    <el-dialog
+      v-model="detailDialogVisible"
+      title="详细信息"
+      width="560px"
+      class="detail-dialog"
+      modal-class="detail-dialog-overlay"
+      align-center
+    >
+      <div v-if="detailStat" class="detail-panel">
+        <div class="detail-section-title">基础信息</div>
+        <div class="detail-row">
+          <span class="detail-label">名称</span>
+          <span class="detail-value">{{ detailStat.name || detailNode?.name || '-' }}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">类型</span>
+          <span class="detail-value">{{ detailTypeText }}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">所属根目录</span>
+          <span class="detail-value">{{ detailRootName }}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">相对路径</span>
+          <span class="detail-value path-value">{{ detailRelativePath }}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">绝对路径</span>
+          <span class="detail-value path-value">{{ detailAbsolutePath || '-' }}</span>
+        </div>
+
+        <div class="detail-section-title">文件属性</div>
+        <div class="detail-row">
+          <span class="detail-label">大小</span>
+          <span class="detail-value">{{ formatDetailSize(detailStat) }}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">修改时间</span>
+          <span class="detail-value">{{ detailStat.mtime || '-' }}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">权限</span>
+          <span class="detail-value">{{ detailStat.mode || '-' }}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">身份平台</span>
+          <span class="detail-value">{{ formatPlatform(detailStat.identityPlatform) }}</span>
+        </div>
+
+        <template v-if="detailIsWindows">
+          <div class="detail-row">
+            <span class="detail-label">所有者</span>
+            <span class="detail-value">{{ detailStat.owner || '-' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">所有者 SID</span>
+            <span class="detail-value path-value">{{ detailStat.ownerId || '-' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">所属组</span>
+            <span class="detail-value">{{ detailStat.group || '-' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">所属组 SID</span>
+            <span class="detail-value path-value">{{ detailStat.groupId || '-' }}</span>
+          </div>
+        </template>
+        <template v-else-if="detailIsLinux">
+          <div class="detail-row">
+            <span class="detail-label">UID</span>
+            <span class="detail-value">{{ formatUnixIdentity(detailStat.uid, detailStat.owner) }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">GID</span>
+            <span class="detail-value">{{ formatUnixIdentity(detailStat.gid, detailStat.group) }}</span>
+          </div>
+        </template>
+        <template v-else>
+          <div class="detail-row">
+            <span class="detail-label">身份信息</span>
+            <span class="detail-value">当前平台未提供</span>
+          </div>
+        </template>
+      </div>
+      <template #footer>
+        <el-button type="primary" @click="detailDialogVisible = false">确定</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 添加常驻目录对话框 -->
     <el-dialog v-model="addRootDialogVisible" title="添加常驻目录" width="500px">
       <el-form>
@@ -532,6 +622,9 @@ const fileStat = ref(null)
 const permInput = ref('')
 const permTargetPath = ref('')
 const permTargetRootIndex = ref(0)
+const detailDialogVisible = ref(false)
+const detailStat = ref(null)
+const detailNode = ref(null)
 
 // 复制/移动目标路径显示
 const copyTargetDisplay = computed(() => {
@@ -545,6 +638,23 @@ const moveTargetDisplay = computed(() => {
   const rootName = rootPaths.value.find(r => r.rootIndex === moveTargetRootIndex.value)?.name || '未知'
   const displayPath = moveTarget.value || '(根目录)'
   return `目标: [${rootName}] ${displayPath}/${selectedItemName.value}`
+})
+
+const detailRootInfo = computed(() => {
+  if (!detailNode.value) return null
+  return rootPaths.value.find(r => r.rootIndex === getNodeRootIndex(detailNode.value)) || null
+})
+const detailRootName = computed(() => detailRootInfo.value?.name || detailRootInfo.value?.alias || '未知')
+const detailRelativePath = computed(() => detailNode.value?.isRoot ? '(根目录)' : (detailStat.value?.path || '-'))
+const detailAbsolutePath = computed(() => getAbsolutePathForNode(detailNode.value))
+const detailIdentityPlatform = computed(() => (detailStat.value?.identityPlatform || '').toLowerCase())
+const detailIsWindows = computed(() => detailIdentityPlatform.value === 'windows')
+const detailIsLinux = computed(() => detailIdentityPlatform.value === 'linux')
+const detailTypeText = computed(() => {
+  if (detailNode.value?.isRoot) return '常驻根目录'
+  if (detailStat.value?.isDirectory) return '目录'
+  if (detailStat.value?.isFile) return '文件'
+  return '未知'
 })
 
 // 目标目录树（用于复制/移动）
@@ -569,6 +679,7 @@ const contextMenuOptions = computed(() => {
 
   if (data.isFile) {
     return [
+      { key: 'details', label: '详细信息', icon: InfoFilled },
       { key: 'rename', label: '重命名', icon: Edit },
       { key: 'duplicate', label: '创建副本', icon: CopyDocument },
       { key: 'delete', label: '删除', icon: Delete },
@@ -581,6 +692,7 @@ const contextMenuOptions = computed(() => {
   if (!data.isDirectory) return []
 
   const options = [
+    { key: 'details', label: '详细信息', icon: InfoFilled },
     { key: 'new-file', label: '新建文件', icon: DocumentAdd },
     { key: 'new-directory', label: '新建目录', icon: FolderAdd },
   ]
@@ -1138,6 +1250,51 @@ function getAbsolutePathForNode(data) {
   return joinAbsolutePath(root.absPath, data.path || '')
 }
 
+function getStatPathForNode(data) {
+  return data?.isRoot ? '' : (data?.path || '')
+}
+
+function formatPlatform(platform) {
+  const value = (platform || '').toLowerCase()
+  if (value === 'windows') return 'Windows'
+  if (value === 'linux') return 'Linux'
+  return platform || '未知'
+}
+
+function formatUnixIdentity(id, name) {
+  if (id === undefined || id === null || id === '') return name || '-'
+  return name ? `${id} (${name})` : `${id}`
+}
+
+function formatDetailSize(stat) {
+  if (!stat) return '-'
+  const sizeText = formatSize(stat.size || 0)
+  return stat.isDirectory ? `${sizeText}（目录项大小，非递归）` : sizeText
+}
+
+async function showDetailDialog(sourceNode = selectedNodeData.value) {
+  const node = sourceNode || null
+  if (!node) return
+
+  const rootIndex = getNodeRootIndex(node)
+  const statPath = getStatPathForNode(node)
+  if (!node.isRoot && !statPath) return
+
+  selectTreeNode(node)
+  const res = await api.getStat(statPath, rootIndex)
+  if (res.success) {
+    detailNode.value = { ...node, path: statPath }
+    detailStat.value = {
+      ...res.data,
+      path: statPath,
+      name: node.isRoot ? node.name : (res.data?.name || node.name),
+    }
+    detailDialogVisible.value = true
+  } else {
+    ElMessage.error('获取详细信息失败: ' + res.error)
+  }
+}
+
 function normalizePathForCompare(filePath) {
   return filePath.replace(/[\\/]+$/, '').toLowerCase()
 }
@@ -1179,6 +1336,8 @@ async function handleContextMenuAction(item) {
     showNewDialog('file', data)
   } else if (item.key === 'new-directory') {
     showNewDialog('directory', data)
+  } else if (item.key === 'details') {
+    await showDetailDialog(data)
   } else if (item.key === 'refresh') {
     await refreshTree(data.treeKey)
   } else if (item.key === 'rename') {
@@ -1846,22 +2005,8 @@ async function handleEditAlias() {
 }
 
 // 显示常驻目录信息
-function showRootInfo(data) {
-  // 从 rootPaths 中找到对应的绝对路径
-  const rootInfo = rootPaths.value.find(r => r.rootIndex === data.rootIndex)
-  const absPath = rootInfo?.absPath || data.absPath || '未知路径'
-
-  ElMessageBox.alert(
-    `<div style="font-family: monospace; word-break: break-all; background: #1e1e1e; padding: 12px; border-radius: 4px; border: 1px solid #444;">
-      ${absPath}
-    </div>`,
-    `📁 ${data.name}`,
-    {
-      confirmButtonText: '确定',
-      dangerouslyUseHTMLString: true,
-      customClass: 'root-info-dialog',
-    }
-  )
+async function showRootInfo(data) {
+  await showDetailDialog(data)
 }
 
 onMounted(() => {
@@ -1880,6 +2025,30 @@ onUnmounted(() => {
 /* 全局样式 - 应用到整个页面 */
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #app { height: 100%; overflow: hidden; }
+
+.detail-dialog-overlay {
+  overflow: hidden !important;
+}
+
+.detail-dialog-overlay .el-overlay-dialog {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden !important;
+  padding: 16px;
+}
+
+.detail-dialog-overlay .detail-dialog {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 32px);
+  margin: 0 !important;
+}
+
+.detail-dialog-overlay .detail-dialog .el-dialog__body {
+  overflow-y: auto;
+  max-height: calc(100vh - 150px);
+}
 
 /* 常驻目录信息对话框样式 - 全局覆盖 */
 .root-info-dialog {
@@ -2174,6 +2343,43 @@ html, body, #app { height: 100%; overflow: hidden; }
 
 .context-menu-item .el-icon {
   font-size: 14px;
+}
+
+.detail-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.detail-section-title {
+  margin-top: 6px;
+  padding-bottom: 4px;
+  color: #e6e6e6;
+  font-size: 13px;
+  font-weight: 600;
+  border-bottom: 1px solid #444;
+}
+
+.detail-row {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  min-height: 24px;
+  font-size: 13px;
+}
+
+.detail-label {
+  color: #9da3ad;
+}
+
+.detail-value {
+  color: #d4d4d4;
+  word-break: break-word;
+}
+
+.detail-value.path-value {
+  font-family: Consolas, 'Courier New', monospace;
 }
 
 .editor-area {
