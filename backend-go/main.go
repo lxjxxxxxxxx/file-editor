@@ -778,6 +778,11 @@ func (a *app) handleFilesSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(req.Content) > maxFileSize {
+		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "超过 2MB 限制"})
+		return
+	}
+
 	if stat, err := os.Stat(real); err == nil && stat.IsDir() {
 		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "不能覆盖目录"})
 		return
