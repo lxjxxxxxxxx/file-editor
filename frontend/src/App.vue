@@ -4,15 +4,6 @@
     <el-header height="50px" class="toolbar">
       <div class="toolbar-left">
         <span class="app-title">📂 在线文件编辑器</span>
-        <el-button-group size="small" class="action-btns">
-          <el-button @click="refreshTree()" :icon="Refresh" title="刷新">刷新</el-button>
-          <el-button @click="showNewDialog('file')" :icon="DocumentAdd" title="新建文件">新文件</el-button>
-          <el-button @click="showNewDialog('directory')" :icon="FolderAdd" title="新建文件夹">新文件夹</el-button>
-          <el-button @click="handleDeleteItem" :disabled="!selectedPath" :icon="Delete" title="删除">删除</el-button>
-          <el-button @click="showCopyDialog" :disabled="!selectedPath" :icon="CopyDocument" title="复制">复制</el-button>
-          <el-button @click="showMoveDialog" :disabled="!selectedPath" :icon="Position" title="移动">移动</el-button>
-          <el-button @click="showPermDialog" :disabled="!selectedPath" :icon="Lock" title="权限">权限</el-button>
-        </el-button-group>
       </div>
     </el-header>
 
@@ -2133,17 +2124,6 @@ html, body, #app { height: 100%; overflow: hidden; }
   font-weight: 600;
   color: #eee;
   white-space: nowrap;
-}
-
-.action-btns .el-button {
-  background: #333;
-  border-color: #444;
-  color: #ccc;
-}
-.action-btns .el-button:hover {
-  background: #444;
-  border-color: #0969da;
-  color: #fff;
 }
 
 .main-container {
