@@ -33,11 +33,13 @@
               </template>
             </el-empty>
           </div>
-          <!-- tree 始终渲染，使用 data 控制内容 -->
+          <!-- 保持 tree 挂载，但无常驻目录时隐藏自带空态 -->
           <el-tree
+            v-show="rootPaths.length > 0 || treeLoading"
             :key="treeRenderKey"
             :data="treeData"
             :props="treeProps"
+            empty-text=""
             node-key="treeKey"
             :load="loadNode"
             lazy
