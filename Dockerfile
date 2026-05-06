@@ -18,5 +18,30 @@ RUN apk --no-cache add ca-certificates tzdata
 WORKDIR /app
 COPY --from=frontend /app/backend-go/dist ./dist
 COPY --from=backend /app/file-editor-backend .
+COPY <<"EOF" /entrypoint.sh
+#!/bin/sh
+set -e
+# 如果挂载进来的 config.json 被 Docker 创建成了目录，删掉并写入默认配置
+if [ -d /app/config.json ]; then
+  rm -rf /app/config.json
+fi
+if [ ! -f /app/config.json ]; then
+  cat > /app/config.json << 'CONFIG_EOF'
+{
+  "token": "file-editor-2024-secret-token",
+  "port": 3002,
+  "rootPaths": [],
+  "excludedNames": [],
+  "excludeHidden": false,
+  "textExtensions": [],
+  "textFileNames": [],
+  "binaryExtensions": [],
+  "binaryFileNames": []
+}
+CONFIG_EOF
+fi
+exec ./file-editor-backend
+EOF
+RUN chmod +x /entrypoint.sh
 EXPOSE 3002
-CMD ["./file-editor-backend"]
+ENTRYPOINT ["/entrypoint.sh"]

@@ -1,0 +1,11 @@
+name: file-editor
+
+services:
+  app:
+    image: ghcr.io/${GITHUB_REPOSITORY:-your-org/file-editor}:latest
+    container_name: file-editor
+    ports:
+      - "3002:3002"
+    volumes:
+      - ./config.json:/app/config.json
+    restart: unless-stopped
