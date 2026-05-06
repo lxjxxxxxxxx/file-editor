@@ -7,5 +7,5 @@ services:
     ports:
       - "3002:3002"
     volumes:
-      - ./config.json:/app/config.json
+      - ./config:/config
     restart: unless-stopped
