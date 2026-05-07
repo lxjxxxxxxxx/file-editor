@@ -56,8 +56,8 @@ export default {
   getRoots() {
     return http.get('/roots').then(r => r.data).catch(e => ({ success: false, error: e.response?.data?.error || e.message }))
   },
-  addRoot(path, alias = '') {
-    return http.post('/roots', { path, alias }).then(r => r.data).catch(e => ({ success: false, error: e.response?.data?.error || e.message }))
+  addRoot(config) {
+    return http.post('/roots', config).then(r => r.data).catch(e => ({ success: false, error: e.response?.data?.error || e.message }))
   },
   updateRootAlias(index, alias) {
     return http.put('/roots', { index, alias }).then(r => r.data).catch(e => ({ success: false, error: e.response?.data?.error || e.message }))

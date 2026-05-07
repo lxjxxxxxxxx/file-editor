@@ -55,12 +55,14 @@
           >
             <template #default="{ data }">
               <span class="tree-node" :class="{ 'is-root': data.isRoot }">
-                <el-icon v-if="isTreeNodeRefreshing(data)" class="tree-loading-icon"><Loading /></el-icon>
+                <el-icon v-if="data.type === 'sftp'"><Monitor /></el-icon>
+                <el-icon v-else-if="isTreeNodeRefreshing(data)" class="tree-loading-icon"><Loading /></el-icon>
                 <el-icon v-else-if="data.isDirectory"><Folder /></el-icon>
                 <el-icon v-else><Document /></el-icon>
                 <span class="tree-label">
                   <span v-if="data.alias" class="root-alias" :title="data.name">{{ data.alias }}</span>
                   <span v-else>{{ data.name }}</span>
+                  <el-tag v-if="data.type && data.type !== 'local'" size="small" class="proto-tag">{{ data.type.toUpperCase() }}</el-tag>
                 </span>
                 <!-- 根目录显示操作按钮 -->
                 <el-button
@@ -404,7 +406,7 @@
             <span class="detail-value path-value">{{ detailStat.groupId || '-' }}</span>
           </div>
         </template>
-        <template v-else-if="detailIsLinux">
+        <template v-else-if="detailIsLinux || detailIsSftp">
           <div class="detail-row">
             <span class="detail-label">UID</span>
             <span class="detail-value">{{ formatUnixIdentity(detailStat.uid, detailStat.owner) }}</span>
@@ -427,34 +429,65 @@
     </el-dialog>
 
     <!-- 添加常驻目录对话框 -->
-    <el-dialog v-model="addRootDialogVisible" title="添加常驻目录" width="500px">
-      <el-form>
-        <el-form-item>
-          <div class="form-label">目录路径</div>
-          <el-input
-            v-model="newRootPath"
-            placeholder="如: /home/user/projects 或 C:\\Users\\user\\Documents"
-            @keyup.enter="handleAddRoot"
-          />
-          <el-text size="small" type="info" style="margin-top: 8px; display: block;">
-            请输入服务器上的绝对路径，该目录将被添加到左侧文件树中。
-          </el-text>
+    <el-dialog v-model="addRootDialogVisible" title="添加常驻目录" width="540px">
+      <el-form label-width="90px">
+        <el-form-item label="协议类型">
+          <el-select v-model="newRootType" style="width: 100%">
+            <el-option label="Local — 本地文件系统" value="local" />
+            <el-option label="SFTP — SSH 文件传输" value="sftp" />
+          </el-select>
         </el-form-item>
-        <el-form-item style="margin-top: 16px;">
-          <div class="form-label">别名（可选）</div>
+
+        <!-- 本地 -->
+        <template v-if="newRootType === 'local'">
+          <el-form-item label="目录路径">
+            <el-input
+              v-model="newRootPath"
+              placeholder="如: /home/user/projects"
+              @keyup.enter="handleAddRoot"
+            />
+          </el-form-item>
+        </template>
+
+        <!-- SFTP -->
+        <template v-if="newRootType === 'sftp'">
+          <el-form-item label="主机地址">
+            <el-input v-model="sftpHost" placeholder="如: 192.168.1.100" @keyup.enter="handleAddRoot" />
+          </el-form-item>
+          <el-form-item label="端口">
+            <el-input-number v-model="sftpPort" :min="1" :max="65535" style="width: 100%" controls-position="right" />
+          </el-form-item>
+          <el-form-item label="用户名">
+            <el-input v-model="sftpUsername" placeholder="SSH 登录用户名" @keyup.enter="handleAddRoot" />
+          </el-form-item>
+          <el-form-item label="认证方式">
+            <el-radio-group v-model="sftpAuthMethod">
+              <el-radio value="password">密码</el-radio>
+              <el-radio value="key">密钥</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item v-if="sftpAuthMethod === 'password'" label="密码">
+            <el-input v-model="sftpPassword" type="password" show-password placeholder="SSH 登录密码" @keyup.enter="handleAddRoot" />
+          </el-form-item>
+          <el-form-item v-if="sftpAuthMethod === 'key'" label="密钥路径">
+            <el-input v-model="sftpKeyPath" placeholder="服务器上的密钥文件路径，如 /home/user/.ssh/id_rsa" @keyup.enter="handleAddRoot" />
+          </el-form-item>
+          <el-form-item label="远程根目录">
+            <el-input v-model="sftpRootPath" placeholder="如: /var/www（留空则使用 /）" @keyup.enter="handleAddRoot" />
+          </el-form-item>
+        </template>
+
+        <el-form-item label="别名">
           <el-input
             v-model="newRootAlias"
-            placeholder="如: 工作项目、个人文档（留空则显示目录名）"
+            placeholder="留空则显示路径名"
             @keyup.enter="handleAddRoot"
           />
-          <el-text size="small" type="info" style="margin-top: 8px; display: block;">
-            别名会显示在文件树中，方便识别不同目录。
-          </el-text>
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="addRootDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleAddRoot">添加</el-button>
+        <el-button @click="addRootDialogVisible = false" :disabled="addRootLoading">取消</el-button>
+        <el-button type="primary" @click="handleAddRoot" :loading="addRootLoading">添加</el-button>
       </template>
     </el-dialog>
 
@@ -514,8 +547,18 @@ const treeRenderKey = ref(0)
 const rootPaths = ref([])  // 常驻目录列表
 const treeLoading = ref(false)  // 树加载状态
 const addRootDialogVisible = ref(false)
+const addRootLoading = ref(false)
+const newRootType = ref('local')
 const newRootPath = ref('')
 const newRootAlias = ref('')  // 新常驻目录别名
+// SFTP 字段
+const sftpHost = ref('')
+const sftpPort = ref(22)
+const sftpUsername = ref('')
+const sftpPassword = ref('')
+const sftpAuthMethod = ref('password')
+const sftpKeyPath = ref('')
+const sftpRootPath = ref('')
 
 // 编辑别名
 const editAliasDialogVisible = ref(false)
@@ -643,6 +686,7 @@ const detailAbsolutePath = computed(() => getAbsolutePathForNode(detailNode.valu
 const detailIdentityPlatform = computed(() => (detailStat.value?.identityPlatform || '').toLowerCase())
 const detailIsWindows = computed(() => detailIdentityPlatform.value === 'windows')
 const detailIsLinux = computed(() => detailIdentityPlatform.value === 'linux')
+const detailIsSftp = computed(() => detailIdentityPlatform.value === 'sftp')
 const detailTypeText = computed(() => {
   if (detailNode.value?.isRoot) return '常驻根目录'
   if (detailStat.value?.isDirectory) return '目录'
@@ -1921,30 +1965,54 @@ function onKeydown(e) {
 
 // 显示添加常驻目录对话框
 function showAddRootDialog() {
+  newRootType.value = 'local'
   newRootPath.value = ''
   newRootAlias.value = ''
+  sftpHost.value = ''
+  sftpPort.value = 22
+  sftpUsername.value = ''
+  sftpPassword.value = ''
+  sftpAuthMethod.value = 'password'
+  sftpKeyPath.value = ''
+  sftpRootPath.value = ''
   addRootDialogVisible.value = true
 }
 
-// 处理添加常驻目录
 async function handleAddRoot() {
-  const path = newRootPath.value.trim()
-  const alias = newRootAlias.value.trim()
-  if (!path) {
-    ElMessage.warning('请输入目录路径')
-    return
-  }
+  addRootLoading.value = true
+  try {
+    const config = { type: newRootType.value, alias: newRootAlias.value.trim() }
 
-  const res = await api.addRoot(path, alias)
-  if (res.success) {
-    ElMessage.success('添加常驻目录成功')
-    addRootDialogVisible.value = false
-    newRootPath.value = ''
-    newRootAlias.value = ''
-    // 刷新树
-    await refreshRootTree()
-  } else {
-    ElMessage.error('添加失败: ' + res.error)
+    if (newRootType.value === 'local') {
+      const path = newRootPath.value.trim()
+      if (!path) { ElMessage.warning('请输入目录路径'); return }
+      config.path = path
+    } else if (newRootType.value === 'sftp') {
+      if (!sftpHost.value.trim()) { ElMessage.warning('请输入主机地址'); return }
+      if (!sftpUsername.value.trim()) { ElMessage.warning('请输入用户名'); return }
+      if (sftpAuthMethod.value === 'password' && !sftpPassword.value) { ElMessage.warning('请输入密码'); return }
+      if (sftpAuthMethod.value === 'key' && !sftpKeyPath.value.trim()) { ElMessage.warning('请输入密钥文件路径'); return }
+      Object.assign(config, {
+        host: sftpHost.value.trim(),
+        port: sftpPort.value,
+        username: sftpUsername.value.trim(),
+        password: sftpPassword.value,
+        authMethod: sftpAuthMethod.value,
+        keyPath: sftpKeyPath.value.trim(),
+        rootPath: sftpRootPath.value.trim() || '/',
+      })
+    }
+
+    const res = await api.addRoot(config)
+    if (res.success) {
+      ElMessage.success('添加成功')
+      addRootDialogVisible.value = false
+      await refreshRootTree()
+    } else {
+      ElMessage.error('添加失败: ' + res.error)
+    }
+  } finally {
+    addRootLoading.value = false
   }
 }
 
@@ -2288,6 +2356,11 @@ html, body, #app { height: 100%; overflow: hidden; }
 .root-alias {
   color: #409eff;
   font-weight: 500;
+}
+
+.proto-tag {
+  margin-left: 6px;
+  vertical-align: middle;
 }
 
 .context-menu {

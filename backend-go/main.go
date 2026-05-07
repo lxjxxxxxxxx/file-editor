@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -19,6 +20,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"file-editor/backend-go/vfs"
+	"github.com/pkg/sftp"
 )
 
 const (
@@ -121,10 +125,26 @@ func baseDir() string {
 
 // rootPathEntry 表示单个根目录配置项。
 type rootPathEntry struct {
-	// Path 表示根目录路径。
+	// Type 表示协议类型："local"、"sftp"、"webdav"、"smb"、"ftp"。空值等效于 "local"。
+	Type string `json:"type"`
+	// Path 表示本地根目录路径（仅 type=local 时使用）。
 	Path string `json:"path"`
 	// Alias 表示根目录在前端展示时使用的别名。
 	Alias string `json:"alias"`
+	// Host 表示远程主机地址（非 local 时使用）。
+	Host string `json:"host,omitempty"`
+	// Port 表示远程端口号。
+	Port int `json:"port,omitempty"`
+	// Username 表示远程登录用户名。
+	Username string `json:"username,omitempty"`
+	// Password 表示远程登录密码。
+	Password string `json:"password,omitempty"`
+	// AuthMethod 表示远程认证方式："password" 或 "key"。
+	AuthMethod string `json:"authMethod,omitempty"`
+	// KeyPath 表示 SSH 密钥文件路径（SFTP 使用）。
+	KeyPath string `json:"keyPath,omitempty"`
+	// RootPath 表示远程根目录路径（非 local 时使用）。
+	RootPath string `json:"rootPath,omitempty"`
 }
 
 // config 表示配置文件在内存中的结构。
@@ -157,6 +177,8 @@ type config struct {
 type rootInfo struct {
 	// Index 表示根目录在当前配置数组中的索引。
 	Index int `json:"index"`
+	// Type 表示协议类型。
+	Type string `json:"type"`
 	// Path 表示配置中保存的原始路径。
 	Path string `json:"path"`
 	// Name 表示前端展示用名称，优先使用别名。
@@ -165,6 +187,16 @@ type rootInfo struct {
 	AbsPath string `json:"absPath"`
 	// Alias 表示根目录别名。
 	Alias string `json:"alias"`
+	// Host 表示远程主机地址。
+	Host string `json:"host,omitempty"`
+	// Port 表示远程端口号。
+	Port int `json:"port,omitempty"`
+	// Username 表示远程登录用户名。
+	Username string `json:"username,omitempty"`
+	// AuthMethod 表示远程认证方式。
+	AuthMethod string `json:"authMethod,omitempty"`
+	// RootPath 表示远程根目录路径。
+	RootPath string `json:"rootPath,omitempty"`
 }
 
 // fileNode 表示文件树中的单个节点。
@@ -189,6 +221,8 @@ type fileNode struct {
 	Mtime int64 `json:"mtime"`
 	// Mode 表示权限位的八进制字符串。
 	Mode string `json:"mode"`
+	// Type 表示根节点的协议类型（仅根节点有效）。
+	Type string `json:"type,omitempty"`
 	// Children 表示目录节点的子节点，占位或实际内容。
 	Children interface{} `json:"children,omitempty"`
 }
@@ -258,6 +292,18 @@ type fileIdentityData struct {
 	GroupID          string
 }
 
+// rootFS 表示运行期单个根目录的运行时状态，包含配置条目和对应的文件系统实现。
+type rootFS struct {
+	// entry 表示该根目录的原始配置。
+	entry rootPathEntry
+	// fs 表示该根目录对应的文件系统实现。
+	fs vfs.FileSystem
+	// rootPath 表示解析后的根目录基准路径（本地为绝对路径，远程为远程根路径）。
+	rootPath string
+	// isLocal 标记是否为本地文件系统，用于路径处理和身份信息获取。
+	isLocal bool
+}
+
 // app 表示整个后端服务的运行时状态。
 type app struct {
 	// mu 用于保护配置和运行时派生数据的并发读写。
@@ -265,8 +311,8 @@ type app struct {
 
 	// config 表示当前生效的原始配置。
 	config config
-	// rootPaths 表示运行期使用的根目录路径列表。
-	rootPaths []string
+	// roots 表示运行期使用的根目录列表。
+	roots []rootFS
 	// excludedNames 表示运行期使用的排除名称集合。
 	excludedNames map[string]struct{}
 	// excludeHidden 表示运行期是否排除隐藏文件。
@@ -337,10 +383,26 @@ type permissionsRequest struct {
 
 // addRootRequest 表示新增常驻目录接口的请求体。
 type addRootRequest struct {
-	// Path 表示要加入常驻列表的目录路径。
+	// Type 表示协议类型。
+	Type string `json:"type"`
+	// Path 表示要加入常驻列表的目录路径（本地）。
 	Path string `json:"path"`
 	// Alias 表示该目录的展示别名。
 	Alias string `json:"alias"`
+	// Host 表示远程主机地址。
+	Host string `json:"host,omitempty"`
+	// Port 表示远程端口号。
+	Port int `json:"port,omitempty"`
+	// Username 表示远程登录用户名。
+	Username string `json:"username,omitempty"`
+	// Password 表示远程登录密码。
+	Password string `json:"password,omitempty"`
+	// AuthMethod 表示远程认证方式。
+	AuthMethod string `json:"authMethod,omitempty"`
+	// KeyPath 表示 SSH 密钥文件路径。
+	KeyPath string `json:"keyPath,omitempty"`
+	// RootPath 表示远程根目录路径。
+	RootPath string `json:"rootPath,omitempty"`
 }
 
 // updateRootRequest 表示更新常驻目录别名接口的请求体。
@@ -610,11 +672,11 @@ func (a *app) handleFilesTree(w http.ResponseWriter, r *http.Request) {
 	listRoots := r.URL.Query().Get("listRoots") == "true"
 
 	if subDir == "" && listRoots {
-		rootInfos := a.getRootInfos()
-		tree := make([]fileNode, 0, len(rootInfos))
-		for _, info := range rootInfos {
-			stat, err := os.Lstat(info.AbsPath)
-			if err != nil {
+		a.mu.RLock()
+		tree := make([]fileNode, 0, len(a.roots))
+		for i, rf := range a.roots {
+			info := a.getRootInfoLocked(i)
+			if info == nil {
 				continue
 			}
 			node := fileNode{
@@ -623,17 +685,27 @@ func (a *app) handleFilesTree(w http.ResponseWriter, r *http.Request) {
 				RootIndex:   info.Index,
 				AbsPath:     info.AbsPath,
 				Alias:       info.Alias,
-				IsDirectory: stat.IsDir(),
-				IsFile:      !stat.IsDir(),
-				Size:        stat.Size(),
-				Mtime:       stat.ModTime().UnixMilli(),
-				Mode:        formatMode(stat.Mode()),
+				Type:        info.Type,
+				IsDirectory: true,
+				IsFile:      false,
+				Mode:        "755",
 			}
-			if stat.IsDir() {
+			if rf.isLocal {
+				stat, err := rf.fs.Stat(rf.rootPath)
+				if err == nil {
+					node.IsDirectory = stat.IsDir()
+					node.IsFile = !stat.IsDir()
+					node.Size = stat.Size()
+					node.Mtime = stat.ModTime().UnixMilli()
+					node.Mode = formatMode(stat.Mode())
+				}
+			}
+			if node.IsDirectory {
 				node.Children = []fileNode{}
 			}
 			tree = append(tree, node)
 		}
+		a.mu.RUnlock()
 
 		writeRawJSON(w, http.StatusOK, map[string]interface{}{
 			"success":     true,
@@ -643,13 +715,13 @@ func (a *app) handleFilesTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	real, err := a.resolvePath(subDir, rootIndex)
+	fs, real, err := a.resolveFS(subDir, rootIndex)
 	if err != nil {
 		writeAppError(w, err)
 		return
 	}
 
-	entries, err := os.ReadDir(real)
+	entries, err := fs.ReadDir(real)
 	if err != nil {
 		writeAppError(w, wrapFSError(err))
 		return
@@ -662,8 +734,8 @@ func (a *app) handleFilesTree(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		full := filepath.Join(real, name)
-		stat, err := os.Lstat(full)
+		full := path.Join(real, name)
+		stat, err := fs.Lstat(full)
 		if err != nil {
 			continue
 		}
@@ -708,13 +780,13 @@ func (a *app) handleFilesContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	real, err := a.resolvePath(filePath, rootIndex)
+	fs, real, err := a.resolveFS(filePath, rootIndex)
 	if err != nil {
 		writeAppError(w, err)
 		return
 	}
 
-	stat, err := os.Stat(real)
+	stat, err := fs.Stat(real)
 	if err != nil {
 		writeAppError(w, wrapFSError(err))
 		return
@@ -728,7 +800,8 @@ func (a *app) handleFilesContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ok, err := a.isTextFile(real, filePath)
+	header, _ := fs.ReadFileHeader(real, 4096)
+	ok, err := a.isTextFile(filePath, header)
 	if err != nil {
 		writeAppError(w, err)
 		return
@@ -738,7 +811,7 @@ func (a *app) handleFilesContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	content, err := os.ReadFile(real)
+	content, err := fs.ReadFile(real)
 	if err != nil {
 		writeAppError(w, wrapFSError(err))
 		return
@@ -772,7 +845,7 @@ func (a *app) handleFilesSave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rootIndex := pickInt(req.RootIndex, req.Root)
-	real, err := a.resolvePath(req.Path, rootIndex)
+	fs, real, err := a.resolveFS(req.Path, rootIndex)
 	if err != nil {
 		writeAppError(w, err)
 		return
@@ -783,16 +856,16 @@ func (a *app) handleFilesSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if stat, err := os.Stat(real); err == nil && stat.IsDir() {
+	if stat, err := fs.Stat(real); err == nil && stat.IsDir() {
 		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "不能覆盖目录"})
 		return
 	}
 
-	if err := os.MkdirAll(filepath.Dir(real), 0o755); err != nil {
+	if err := fs.MkdirAll(path.Dir(real), 0o755); err != nil {
 		writeAppError(w, wrapFSError(err))
 		return
 	}
-	if err := os.WriteFile(real, []byte(req.Content), 0o644); err != nil {
+	if err := fs.WriteFile(real, []byte(req.Content)); err != nil {
 		writeAppError(w, wrapFSError(err))
 		return
 	}
@@ -818,36 +891,34 @@ func (a *app) handleFilesCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rootIndex := pickInt(req.RootIndex, req.Root)
-	real, err := a.resolvePath(req.Path, rootIndex)
+	fs, real, err := a.resolveFS(req.Path, rootIndex)
 	if err != nil {
 		writeAppError(w, err)
 		return
 	}
 
-	if _, err := os.Stat(real); err == nil {
+	if _, err := fs.Stat(real); err == nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "目标已存在"})
 		return
-	} else if !errors.Is(err, os.ErrNotExist) {
+	} else if !vfs.IsNotExist(err) {
 		writeAppError(w, wrapFSError(err))
 		return
 	}
 
 	if req.Type == "directory" {
-		if err := os.MkdirAll(real, 0o755); err != nil {
+		if err := fs.MkdirAll(real, 0o755); err != nil {
 			writeAppError(w, wrapFSError(err))
 			return
 		}
 	} else {
-		if err := os.MkdirAll(filepath.Dir(real), 0o755); err != nil {
+		if err := fs.MkdirAll(path.Dir(real), 0o755); err != nil {
 			writeAppError(w, wrapFSError(err))
 			return
 		}
-		f, err := os.OpenFile(real, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-		if err != nil {
+		if err := fs.CreateFile(real); err != nil {
 			writeAppError(w, wrapFSError(err))
 			return
 		}
-		_ = f.Close()
 	}
 
 	writeJSON(w, http.StatusOK, apiResponse{Success: true, Message: "创建成功"})
@@ -867,25 +938,25 @@ func (a *app) handleFilesDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	real, err := a.resolvePath(filePath, rootIndex)
+	fs, real, err := a.resolveFS(filePath, rootIndex)
 	if err != nil {
 		writeAppError(w, err)
 		return
 	}
 
-	stat, err := os.Stat(real)
+	stat, err := fs.Stat(real)
 	if err != nil {
 		writeAppError(w, wrapFSError(err))
 		return
 	}
 
 	if stat.IsDir() {
-		if err := os.RemoveAll(real); err != nil {
+		if err := fs.RemoveAll(real); err != nil {
 			writeAppError(w, wrapFSError(err))
 			return
 		}
 	} else {
-		if err := os.Remove(real); err != nil {
+		if err := fs.Remove(real); err != nil {
 			writeAppError(w, wrapFSError(err))
 			return
 		}
@@ -912,38 +983,44 @@ func (a *app) handleFilesCopy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fromRoot, toRoot := parseCopyMoveRoots(req)
-	fromReal, err := a.resolvePath(req.From, fromRoot)
+	fromFS, fromReal, err := a.resolveFS(req.From, fromRoot)
 	if err != nil {
 		writeAppError(w, err)
 		return
 	}
-	toReal, err := a.resolvePath(req.To, toRoot)
+	toFS, toReal, err := a.resolveFS(req.To, toRoot)
 	if err != nil {
 		writeAppError(w, err)
 		return
 	}
 
-	fromStat, err := os.Lstat(fromReal)
+	fromStat, err := fromFS.Lstat(fromReal)
 	if err != nil {
 		writeAppError(w, wrapFSError(err))
 		return
 	}
-	if fromStat.IsDir() && isPathInsideOrSame(fromReal, toReal) {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "不能复制目录到自身或其子目录中"})
-		return
-	}
 
-	if _, err := os.Stat(toReal); err == nil {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "目标已存在"})
-		return
-	} else if !errors.Is(err, os.ErrNotExist) {
-		writeAppError(w, wrapFSError(err))
-		return
-	}
-
-	if err := copyPath(fromReal, toReal); err != nil {
-		writeAppError(w, wrapFSError(err))
-		return
+	if fromRoot == toRoot {
+		if fromStat.IsDir() && vfs.IsPathInsideOrSame(fromReal, toReal) {
+			writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "不能复制目录到自身或其子目录中"})
+			return
+		}
+		if _, err := toFS.Stat(toReal); err == nil {
+			writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "目标已存在"})
+			return
+		} else if !vfs.IsNotExist(err) {
+			writeAppError(w, wrapFSError(err))
+			return
+		}
+		if err := fromFS.Copy(fromReal, toReal); err != nil {
+			writeAppError(w, wrapFSError(err))
+			return
+		}
+	} else {
+		if err := crossFSCopy(fromFS, fromReal, toFS, toReal); err != nil {
+			writeAppError(w, wrapFSError(err))
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, apiResponse{Success: true, Message: "复制成功"})
@@ -967,38 +1044,48 @@ func (a *app) handleFilesMove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fromRoot, toRoot := parseCopyMoveRoots(req)
-	fromReal, err := a.resolvePath(req.From, fromRoot)
+	fromFS, fromReal, err := a.resolveFS(req.From, fromRoot)
 	if err != nil {
 		writeAppError(w, err)
 		return
 	}
-	toReal, err := a.resolvePath(req.To, toRoot)
+	toFS, toReal, err := a.resolveFS(req.To, toRoot)
 	if err != nil {
 		writeAppError(w, err)
 		return
 	}
 
-	fromStat, err := os.Lstat(fromReal)
+	fromStat, err := fromFS.Lstat(fromReal)
 	if err != nil {
 		writeAppError(w, wrapFSError(err))
 		return
 	}
-	if fromStat.IsDir() && isPathInsideOrSame(fromReal, toReal) {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "不能移动目录到自身或其子目录中"})
-		return
-	}
 
-	if _, err := os.Stat(toReal); err == nil {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "目标已存在"})
-		return
-	} else if !errors.Is(err, os.ErrNotExist) {
-		writeAppError(w, wrapFSError(err))
-		return
-	}
-
-	if err := movePath(fromReal, toReal); err != nil {
-		writeAppError(w, wrapFSError(err))
-		return
+	if fromRoot == toRoot {
+		if fromStat.IsDir() && vfs.IsPathInsideOrSame(fromReal, toReal) {
+			writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "不能移动目录到自身或其子目录中"})
+			return
+		}
+		if _, err := toFS.Stat(toReal); err == nil {
+			writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "目标已存在"})
+			return
+		} else if !vfs.IsNotExist(err) {
+			writeAppError(w, wrapFSError(err))
+			return
+		}
+		if err := vfs.Move(fromFS, fromReal, toReal); err != nil {
+			writeAppError(w, wrapFSError(err))
+			return
+		}
+	} else {
+		if err := crossFSCopy(fromFS, fromReal, toFS, toReal); err != nil {
+			writeAppError(w, wrapFSError(err))
+			return
+		}
+		if err := fromFS.RemoveAll(fromReal); err != nil {
+			writeAppError(w, wrapFSError(err))
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, apiResponse{Success: true, Message: "移动成功"})
@@ -1014,26 +1101,26 @@ func (a *app) handleFilesStat(w http.ResponseWriter, r *http.Request) {
 	filePath := r.URL.Query().Get("path")
 	rootIndex := parseRootIndexFromQuery(r)
 
-	real, err := a.resolvePath(filePath, rootIndex)
+	fs, real, err := a.resolveFS(filePath, rootIndex)
 	if err != nil {
 		writeAppError(w, err)
 		return
 	}
 
-	stat, err := os.Stat(real)
+	stat, err := fs.Stat(real)
 	if err != nil {
 		writeAppError(w, wrapFSError(err))
 		return
 	}
 
-	name := filepath.Base(filePath)
+	name := path.Base(filePath)
 	if filePath == "" {
-		name = filepath.Base(real)
-		if name == "." || name == string(os.PathSeparator) || name == "" {
+		name = path.Base(real)
+		if name == "." || name == "/" || name == "" {
 			name = real
 		}
 	}
-	identity := getFileIdentity(real, stat)
+	identity := a.getIdentityForFS(fs, real, stat)
 	writeJSON(w, http.StatusOK, apiResponse{
 		Success: true,
 		Data: fileStatData{
@@ -1077,14 +1164,14 @@ func (a *app) handleFilesPermissions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rootIndex := pickInt(req.RootIndex, req.Root)
-	real, err := a.resolvePath(req.Path, rootIndex)
+	fs, real, err := a.resolveFS(req.Path, rootIndex)
 	if err != nil {
 		writeAppError(w, err)
 		return
 	}
 
-	mode, _ := strconv.ParseUint(req.Mode, 8, 32)
-	if err := os.Chmod(real, fs.FileMode(mode)); err != nil {
+	modeVal, _ := strconv.ParseUint(req.Mode, 8, 32)
+	if err := fs.Chmod(real, os.FileMode(modeVal)); err != nil {
 		writeAppError(w, wrapFSError(err))
 		return
 	}
@@ -1121,42 +1208,74 @@ func (a *app) handleRootsAdd(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: err.Error()})
 		return
 	}
-	if req.Path == "" {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "缺少 path"})
-		return
-	}
 
-	absPath, err := filepath.Abs(req.Path)
-	if err != nil {
-		writeAppError(w, errInvalidPath)
-		return
-	}
-
-	stat, err := os.Stat(absPath)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "路径不存在或无法访问"})
-		return
-	}
-	if !stat.IsDir() {
-		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "路径不是目录"})
-		return
-	}
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	for _, item := range a.config.RootPaths {
-		existingAbs, _ := filepath.Abs(item.Path)
-		if samePath(existingAbs, absPath) {
-			writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "该目录已在常驻列表中"})
+	rootType := strings.ToLower(strings.TrimSpace(req.Type))
+	if rootType == "" || rootType == "local" {
+		if req.Path == "" {
+			writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "缺少 path"})
 			return
 		}
+		absPath, err := filepath.Abs(req.Path)
+		if err != nil {
+			writeAppError(w, errInvalidPath)
+			return
+		}
+		localFS := vfs.NewLocalFS()
+		stat, err := localFS.Stat(absPath)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "路径不存在或无法访问"})
+			return
+		}
+		if !stat.IsDir() {
+			writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "路径不是目录"})
+			return
+		}
+
+		a.mu.Lock()
+		defer a.mu.Unlock()
+
+		for _, item := range a.config.RootPaths {
+			if !strings.EqualFold(strings.TrimSpace(item.Type), "sftp") {
+				existingAbs, _ := filepath.Abs(item.Path)
+				if samePath(existingAbs, absPath) {
+					writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "该目录已在常驻列表中"})
+					return
+				}
+			}
+		}
+
+		a.config.RootPaths = append(a.config.RootPaths, rootPathEntry{
+			Path:  req.Path,
+			Alias: strings.TrimSpace(req.Alias),
+		})
+	} else {
+		if req.Host == "" {
+			writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "远程主机地址不能为空"})
+			return
+		}
+
+		// 添加前先测试连接
+		if err := testSFTPConnection(req); err != nil {
+			writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "连接验证失败: " + err.Error()})
+			return
+		}
+
+		a.mu.Lock()
+		defer a.mu.Unlock()
+
+		a.config.RootPaths = append(a.config.RootPaths, rootPathEntry{
+			Type:       req.Type,
+			Alias:      strings.TrimSpace(req.Alias),
+			Host:       req.Host,
+			Port:       req.Port,
+			Username:   req.Username,
+			Password:   req.Password,
+			AuthMethod: req.AuthMethod,
+			KeyPath:    req.KeyPath,
+			RootPath:   strings.TrimSpace(req.RootPath),
+		})
 	}
 
-	a.config.RootPaths = append(a.config.RootPaths, rootPathEntry{
-		Path:  req.Path,
-		Alias: strings.TrimSpace(req.Alias),
-	})
 	a.rebuildRuntimeConfigLocked()
 
 	if err := a.saveConfigLocked(); err != nil {
@@ -1310,10 +1429,35 @@ func (a *app) saveConfigLocked() error {
 
 // rebuildRuntimeConfigLocked 基于原始配置重建运行期缓存字段，调用方需持有写锁。
 func (a *app) rebuildRuntimeConfigLocked() {
-	a.rootPaths = make([]string, 0, len(a.config.RootPaths))
+	a.roots = make([]rootFS, 0, len(a.config.RootPaths))
 	for _, item := range a.config.RootPaths {
-		if strings.TrimSpace(item.Path) != "" {
-			a.rootPaths = append(a.rootPaths, item.Path)
+		rootType := strings.ToLower(strings.TrimSpace(item.Type))
+		if rootType == "" || rootType == "local" {
+			localPath := strings.TrimSpace(item.Path)
+			if localPath == "" {
+				continue
+			}
+			absPath, err := filepath.Abs(localPath)
+			if err != nil {
+				continue
+			}
+			a.roots = append(a.roots, rootFS{
+				entry:    item,
+				fs:       vfs.NewLocalFS(),
+				rootPath: absPath,
+				isLocal:  true,
+			})
+		} else if rootType == "sftp" {
+			remoteRoot := strings.TrimSpace(item.RootPath)
+			if remoteRoot == "" {
+				remoteRoot = "/"
+			}
+			a.roots = append(a.roots, rootFS{
+				entry:    item,
+				fs:       vfs.NewSFTPFS(toSFTPConfig(item), remoteRoot),
+				rootPath: remoteRoot,
+				isLocal:  false,
+			})
 		}
 	}
 
@@ -1344,6 +1488,31 @@ func (a *app) rebuildRuntimeConfigLocked() {
 
 	a.binaryFileNames = normalizeStringSet(nil, false)
 	mergeStringSet(a.binaryFileNames, cfgStringSlice(a.config.BinaryFileNames), false)
+}
+
+// toSFTPConfig 将 rootPathEntry 转换为 SFTP 连接配置。
+func toSFTPConfig(entry rootPathEntry) vfs.SFTPConfig {
+	return vfs.SFTPConfig{
+		Host:       entry.Host,
+		Port:       entry.Port,
+		Username:   entry.Username,
+		Password:   entry.Password,
+		AuthMethod: entry.AuthMethod,
+		KeyPath:    entry.KeyPath,
+	}
+}
+
+// testSFTPConnection 测试给定配置的 SFTP 连接是否可用。
+func testSFTPConnection(req addRootRequest) error {
+	config := vfs.SFTPConfig{
+		Host:       req.Host,
+		Port:       req.Port,
+		Username:   req.Username,
+		Password:   req.Password,
+		AuthMethod: req.AuthMethod,
+		KeyPath:    req.KeyPath,
+	}
+	return vfs.TestSFTPConnection(config)
 }
 
 // cfgStringSlice 返回配置切片的副本，避免运行时误改原配置。
@@ -1394,25 +1563,113 @@ func (a *app) getRootInfos() []rootInfo {
 
 // getRootInfosLocked 在已持锁前提下构建根目录信息列表。
 func (a *app) getRootInfosLocked() []rootInfo {
-	infos := make([]rootInfo, 0, len(a.config.RootPaths))
-	for i, item := range a.config.RootPaths {
-		absPath, _ := filepath.Abs(item.Path)
-		name := item.Alias
-		if strings.TrimSpace(name) == "" {
-			name = filepath.Base(absPath)
-			if name == "." || name == string(os.PathSeparator) || name == "" {
-				name = item.Path
-			}
+	infos := make([]rootInfo, 0, len(a.roots))
+	for i := range a.roots {
+		info := a.getRootInfoLocked(i)
+		if info != nil {
+			infos = append(infos, *info)
 		}
-		infos = append(infos, rootInfo{
-			Index:   i,
-			Path:    item.Path,
-			Name:    name,
-			AbsPath: absPath,
-			Alias:   item.Alias,
-		})
 	}
 	return infos
+}
+
+// getRootInfoLocked 在已持锁前提下返回指定索引的根目录信息。
+func (a *app) getRootInfoLocked(index int) *rootInfo {
+	if index < 0 || index >= len(a.roots) {
+		return nil
+	}
+	rf := a.roots[index]
+	item := rf.entry
+	basePath := rf.rootPath
+	name := item.Alias
+	if strings.TrimSpace(name) == "" {
+		if rf.isLocal {
+			name = filepath.Base(basePath)
+		} else {
+			name = basePath
+		}
+		if name == "." || name == string(os.PathSeparator) || name == "" {
+			name = item.Path
+			if name == "" {
+				name = item.Host
+			}
+		}
+	}
+	info := rootInfo{
+		Index:      index,
+		Type:       item.Type,
+		Path:       item.Path,
+		Name:       name,
+		AbsPath:    basePath,
+		Alias:      item.Alias,
+		Host:       item.Host,
+		Port:       item.Port,
+		Username:   item.Username,
+		AuthMethod: item.AuthMethod,
+		RootPath:   item.RootPath,
+	}
+	return &info
+}
+
+// getIdentityForFS 根据文件系统类型获取文件身份信息。
+// 本地文件系统使用平台特定实现，远程文件系统返回空信息。
+func (a *app) getIdentityForFS(fs vfs.FileSystem, path string, stat os.FileInfo) fileIdentityData {
+	switch fs.(type) {
+	case *vfs.LocalFS:
+		return getFileIdentity(path, stat)
+	case *vfs.SFTPFS:
+		if sys, ok := stat.Sys().(*sftp.FileStat); ok {
+			return fileIdentityData{
+				UID:              int(sys.UID),
+				GID:              int(sys.GID),
+				IdentityPlatform: "sftp",
+				OwnerID:          strconv.Itoa(int(sys.UID)),
+				GroupID:          strconv.Itoa(int(sys.GID)),
+			}
+		}
+	}
+	return fileIdentityData{}
+}
+
+// crossFSCopy 在不同文件系统之间复制文件或目录，使用 ReadFile/WriteFile 回退。
+func crossFSCopy(srcFS vfs.FileSystem, srcPath string, dstFS vfs.FileSystem, dstPath string) error {
+	srcStat, err := srcFS.Lstat(srcPath)
+	if err != nil {
+		return err
+	}
+	if srcStat.IsDir() {
+		return crossFSCopyDir(srcFS, srcPath, dstFS, dstPath, srcStat.Mode())
+	}
+	return crossFSCopyFile(srcFS, srcPath, dstFS, dstPath, srcStat.Mode())
+}
+
+func crossFSCopyDir(srcFS vfs.FileSystem, srcPath string, dstFS vfs.FileSystem, dstPath string, mode os.FileMode) error {
+	if err := dstFS.MkdirAll(dstPath, mode.Perm()); err != nil {
+		return err
+	}
+	entries, err := srcFS.ReadDir(srcPath)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		srcChild := path.Join(srcPath, entry.Name())
+		dstChild := path.Join(dstPath, entry.Name())
+		if err := crossFSCopy(srcFS, srcChild, dstFS, dstChild); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func crossFSCopyFile(srcFS vfs.FileSystem, srcPath string, dstFS vfs.FileSystem, dstPath string, mode os.FileMode) error {
+	if err := dstFS.MkdirAll(path.Dir(dstPath), 0o755); err != nil {
+		return err
+	}
+	data, err := srcFS.ReadFile(srcPath)
+	if err != nil {
+		return err
+	}
+	return dstFS.WriteFile(dstPath, data)
 }
 
 // currentPort 返回当前配置中的监听端口。
@@ -1422,42 +1679,58 @@ func (a *app) currentPort() int {
 	return a.config.Port
 }
 
-// currentRootPaths 返回运行期根目录列表的副本，避免外部修改内部切片。
+// currentRootPaths 返回运行期根目录路径列表，用于启动日志。
 func (a *app) currentRootPaths() []string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	out := make([]string, len(a.rootPaths))
-	copy(out, a.rootPaths)
+	out := make([]string, 0, len(a.roots))
+	for _, rf := range a.roots {
+		out = append(out, rf.rootPath)
+	}
 	return out
 }
 
 // resolvePath 将相对路径解析为绝对路径，并校验其仍位于允许的根目录范围内。
-func (a *app) resolvePath(filePath string, rootIndex int) (string, error) {
+// resolveFS 根据根目录索引获取对应的文件系统实现和解析后的访问路径。
+func (a *app) resolveFS(filePath string, rootIndex int) (vfs.FileSystem, string, error) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
-	if len(a.rootPaths) == 0 {
-		return "", errNoRootPath
+	if len(a.roots) == 0 {
+		return nil, "", errNoRootPath
 	}
-	if rootIndex < 0 || rootIndex >= len(a.rootPaths) {
+	if rootIndex < 0 || rootIndex >= len(a.roots) {
 		rootIndex = 0
 	}
 
-	rootDir := a.rootPaths[rootIndex]
-	resolvedRoot, err := filepath.Abs(rootDir)
-	if err != nil {
-		return "", errInvalidPath
-	}
-	resolved := filepath.Join(resolvedRoot, filepath.FromSlash(filePath))
-	resolved, err = filepath.Abs(resolved)
-	if err != nil {
-		return "", errInvalidPath
+	rf := a.roots[rootIndex]
+	if rf.isLocal {
+		rootDir := rf.rootPath
+		resolved := filepath.Join(rootDir, filepath.FromSlash(filePath))
+		resolvedAbs, err := filepath.Abs(resolved)
+		if err != nil {
+			return nil, "", errInvalidPath
+		}
+		if !samePath(resolvedAbs, rootDir) && !strings.HasPrefix(withTrailingSep(resolvedAbs), withTrailingSep(rootDir)) {
+			return nil, "", errPathTraversal
+		}
+		return rf.fs, resolvedAbs, nil
 	}
 
-	if !samePath(resolved, resolvedRoot) && !strings.HasPrefix(withTrailingSep(resolved), withTrailingSep(resolvedRoot)) {
-		return "", errPathTraversal
+	// 远程文件系统：使用前斜杠路径拼接
+	joined := path.Join(rf.rootPath, filePath)
+	cleanRoot := path.Clean(rf.rootPath)
+	cleanJoined := path.Clean(joined)
+	if cleanJoined != cleanRoot {
+		rootPrefix := cleanRoot
+		if rootPrefix != "/" {
+			rootPrefix += "/"
+		}
+		if !strings.HasPrefix(cleanJoined, rootPrefix) {
+			return nil, "", errPathTraversal
+		}
 	}
-	return resolved, nil
+	return rf.fs, cleanJoined, nil
 }
 
 // shouldExclude 判断某个文件名是否应在文件树中被过滤掉。
@@ -1495,11 +1768,10 @@ func parseRootPaths(rootPath string, raw json.RawMessage) ([]rootPathEntry, erro
 	if err := json.Unmarshal(raw, &objectItems); err == nil {
 		out := make([]rootPathEntry, 0, len(objectItems))
 		for _, item := range objectItems {
-			if strings.TrimSpace(item.Path) != "" {
-				out = append(out, rootPathEntry{
-					Path:  item.Path,
-					Alias: item.Alias,
-				})
+			itemType := strings.ToLower(strings.TrimSpace(item.Type))
+			// 本地目录必须要有 path，远程目录可以不设 path
+			if strings.TrimSpace(item.Path) != "" || (itemType != "" && itemType != "local") {
+				out = append(out, item)
 			}
 		}
 		return out, nil
@@ -1594,32 +1866,27 @@ func sortNodes(nodes []fileNode) {
 	})
 }
 
-// isTextFile 优先根据内容探测判断文本文件，并允许配置扩展规则。
-func (a *app) isTextFile(realPath, filePath string) (bool, error) {
+// isTextFile 根据文件路径规则和内容头部判断是否为文本文件。
+// header 是文件开头若干字节，为空时只做规则判断。
+func (a *app) isTextFile(filePath string, header []byte) (bool, error) {
 	ext := strings.ToLower(filepath.Ext(filePath))
 	baseName := strings.ToLower(filepath.Base(filePath))
 	if a.isConfiguredBinaryFile(ext, baseName) {
 		return false, nil
 	}
 
-	header, err := readFileHeader(realPath, 4096)
-	if err != nil {
-		return false, wrapFSError(err)
-	}
-	if len(header) == 0 {
-		return true, nil
-	}
-
-	for _, sig := range binarySignatures {
-		if len(header) >= len(sig) && bytes.Equal(header[:len(sig)], sig) {
+	if len(header) > 0 {
+		for _, sig := range binarySignatures {
+			if len(header) >= len(sig) && bytes.Equal(header[:len(sig)], sig) {
+				return false, nil
+			}
+		}
+		if hasNullByte(header) {
 			return false, nil
 		}
-	}
-	if hasNullByte(header) {
-		return false, nil
-	}
-	if isLikelyTextContent(header) {
-		return true, nil
+		if isLikelyTextContent(header) {
+			return true, nil
+		}
 	}
 
 	if a.isConfiguredTextFile(ext, baseName) {
@@ -1633,12 +1900,14 @@ func (a *app) isTextFile(realPath, filePath string) (bool, error) {
 		}
 	}
 
-	contentType := http.DetectContentType(header)
-	if strings.HasPrefix(contentType, "text/") {
-		return true, nil
-	}
-	if contentType == "application/octet-stream" && isLikelyUTF8(header) {
-		return true, nil
+	if len(header) > 0 {
+		contentType := http.DetectContentType(header)
+		if strings.HasPrefix(contentType, "text/") {
+			return true, nil
+		}
+		if contentType == "application/octet-stream" && isLikelyUTF8(header) {
+			return true, nil
+		}
 	}
 	return false, nil
 }
@@ -1659,22 +1928,6 @@ func (a *app) isConfiguredBinaryFile(ext, baseName string) bool {
 	_, extOK := a.binaryExtensions[ext]
 	_, nameOK := a.binaryFileNames[baseName]
 	return extOK || nameOK
-}
-
-// readFileHeader 读取文件头部若干字节，用于类型探测。
-func readFileHeader(path string, size int) ([]byte, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	buf := make([]byte, size)
-	n, err := file.Read(buf)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, err
-	}
-	return buf[:n], nil
 }
 
 // hasNullByte 判断内容中是否包含明显的二进制空字节。
@@ -1743,120 +1996,12 @@ func utf8DecodeRune(data []byte) (rune, int) {
 	return '\uFFFD', 1
 }
 
-// copyPath 根据源路径类型递归复制文件或目录。
-func copyPath(src, dst string) error {
-	stat, err := os.Lstat(src)
-	if err != nil {
-		return err
-	}
-	if stat.IsDir() {
-		return copyDir(src, dst, stat.Mode())
-	}
-	return copyFile(src, dst, stat.Mode())
-}
-
-// copyDir 递归复制整个目录树。
-func copyDir(src, dst string, mode fs.FileMode) error {
-	if err := os.MkdirAll(dst, mode.Perm()); err != nil {
-		return err
-	}
-
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		return err
-	}
-
-	for _, entry := range entries {
-		srcChild := filepath.Join(src, entry.Name())
-		dstChild := filepath.Join(dst, entry.Name())
-		if err := copyPath(srcChild, dstChild); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// copyFile 复制单个文件内容并保留基础权限。
-func copyFile(src, dst string, mode fs.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode.Perm())
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return out.Sync()
-}
-
-// movePath 优先尝试重命名，跨设备时回退为复制后删除。
-func movePath(src, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	if err := os.Rename(src, dst); err == nil {
-		return nil
-	} else if !isCrossDeviceError(err) {
-		return err
-	}
-
-	if err := copyPath(src, dst); err != nil {
-		return err
-	}
-	return os.RemoveAll(src)
-}
-
-// isCrossDeviceError 判断错误是否由跨设备移动导致。
-func isCrossDeviceError(err error) bool {
-	type causer interface {
-		Unwrap() error
-	}
-
-	for current := err; current != nil; {
-		if strings.Contains(strings.ToLower(current.Error()), "cross-device") ||
-			strings.Contains(strings.ToLower(current.Error()), "invalid cross-device link") {
-			return true
-		}
-		next, ok := current.(causer)
-		if !ok {
-			break
-		}
-		current = next.Unwrap()
-	}
-	return false
-}
-
 // samePath 比较两个路径在当前平台下是否表示同一位置。
 func samePath(a, b string) bool {
 	if runtime.GOOS == "windows" {
 		return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 	}
 	return filepath.Clean(a) == filepath.Clean(b)
-}
-
-// isPathInsideOrSame 判断目标路径是否等于源目录或位于源目录内部。
-func isPathInsideOrSame(parent, child string) bool {
-	resolvedParent, err := filepath.Abs(parent)
-	if err != nil {
-		return false
-	}
-	resolvedChild, err := filepath.Abs(child)
-	if err != nil {
-		return false
-	}
-	return samePath(resolvedParent, resolvedChild) ||
-		strings.HasPrefix(withTrailingSep(resolvedChild), withTrailingSep(resolvedParent))
 }
 
 // withTrailingSep 为路径追加结尾分隔符，便于做前缀比较。
