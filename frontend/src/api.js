@@ -65,4 +65,13 @@ export default {
   removeRoot(index) {
     return http.delete('/roots', { params: { index } }).then(r => r.data).catch(e => ({ success: false, error: e.response?.data?.error || e.message }))
   },
+  getPins() {
+    return http.get('/files/pin').then(r => r.data).catch(e => ({ success: false, error: e.response?.data?.error || e.message }))
+  },
+  pinPath(rootIndex, path) {
+    return http.post('/files/pin', { rootIndex, path }).then(r => r.data).catch(e => ({ success: false, error: e.response?.data?.error || e.message }))
+  },
+  unpinPath(rootIndex, path) {
+    return http.delete('/files/pin', { params: { rootIndex, path } }).then(r => r.data).catch(e => ({ success: false, error: e.response?.data?.error || e.message }))
+  },
 }

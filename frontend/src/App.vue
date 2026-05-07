@@ -55,7 +55,8 @@
           >
             <template #default="{ data }">
               <span class="tree-node" :class="{ 'is-root': data.isRoot }">
-                <el-icon v-if="data.type === 'sftp'"><Monitor /></el-icon>
+                <el-icon v-if="data.pinned" class="pin-icon"><StarFilled /></el-icon>
+                <el-icon v-else-if="data.type === 'sftp'"><Monitor /></el-icon>
                 <el-icon v-else-if="isTreeNodeRefreshing(data)" class="tree-loading-icon"><Loading /></el-icon>
                 <el-icon v-else-if="data.isDirectory"><Folder /></el-icon>
                 <el-icon v-else><Document /></el-icon>
@@ -524,7 +525,7 @@ import MonacoEditor from './MonacoEditor.vue'
 import {
   Refresh, DocumentAdd, FolderAdd, Delete, CopyDocument,
   Position, Lock, Folder, Document, Finished, EditPen, Loading,
-  Plus, Close, InfoFilled, Monitor, Edit
+  Plus, Close, InfoFilled, Monitor, Edit, StarFilled
 } from '@element-plus/icons-vue'
 import api from './api.js'
 
@@ -714,8 +715,12 @@ const contextMenuOptions = computed(() => {
   const data = contextMenuNode.value
   if (!data) return []
 
+  const pinLabel = data.pinned ? '取消收藏' : '添加收藏'
+  const pinIcon = StarFilled
+
   if (data.isFile) {
     return [
+      { key: 'pin', label: pinLabel, icon: pinIcon },
       { key: 'details', label: '详细信息', icon: InfoFilled },
       { key: 'rename', label: '重命名', icon: Edit },
       { key: 'duplicate', label: '创建副本', icon: CopyDocument },
@@ -736,6 +741,7 @@ const contextMenuOptions = computed(() => {
 
   if (!data.isRoot) {
     options.push(
+      { key: 'pin', label: pinLabel, icon: pinIcon },
       { key: 'rename', label: '重命名', icon: Edit },
       { key: 'duplicate', label: '创建副本', icon: CopyDocument },
       { key: 'delete', label: '删除', icon: Delete },
@@ -746,10 +752,6 @@ const contextMenuOptions = computed(() => {
   }
 
   options.push({ key: 'refresh', label: '刷新', icon: Refresh })
-
-  if (!data.isRoot) {
-    options.push({ key: 'add-root', label: '添加为常驻目录', icon: Plus })
-  }
 
   return options
 })
@@ -766,7 +768,7 @@ function mapTreeChildren(items, rootIndex) {
   return items.map(item => ({
     ...item,
     rootIndex,
-    treeKey: `${rootIndex}-${item.path}`,
+    treeKey: item.pinned ? `pin-${rootIndex}-${item.path}` : `${rootIndex}-${item.path}`,
   }))
 }
 
@@ -1332,35 +1334,27 @@ async function showDetailDialog(sourceNode = selectedNodeData.value) {
   }
 }
 
-function normalizePathForCompare(filePath) {
-  return filePath.replace(/[\\/]+$/, '').toLowerCase()
-}
-
-function isRootPathAlreadyAdded(filePath) {
-  const targetPath = normalizePathForCompare(filePath)
-  return rootPaths.value.some(item => normalizePathForCompare(item.absPath || item.path || '') === targetPath)
-}
-
-async function addDirectoryAsRoot(data) {
-  if (!data?.isDirectory) return
-
-  const directoryPath = getAbsolutePathForNode(data)
-  if (!directoryPath) {
-    ElMessage.error('无法获取目录绝对路径')
-    return
-  }
-
-  if (isRootPathAlreadyAdded(directoryPath)) {
-    ElMessage.info('该目录已是常驻目录')
-    return
-  }
-
-  const res = await api.addRoot(directoryPath)
-  if (res.success) {
-    ElMessage.success('已添加为常驻目录')
-    await refreshRootTree()
+async function togglePin(data) {
+  if (!data?.path) return
+  const rootIndex = getNodeRootIndex(data)
+  if (data.pinned) {
+    const res = await api.unpinPath(rootIndex, data.path)
+    if (res.success) {
+      data.pinned = false
+      ElMessage.success('已取消收藏')
+      await refreshTree(data.treeKey)
+    } else {
+      ElMessage.error('取消收藏失败: ' + res.error)
+    }
   } else {
-    ElMessage.error('添加失败: ' + res.error)
+    const res = await api.pinPath(rootIndex, data.path)
+    if (res.success) {
+      data.pinned = true
+      ElMessage.success('已添加收藏')
+      await refreshTree(data.treeKey)
+    } else {
+      ElMessage.error('收藏失败: ' + res.error)
+    }
   }
 }
 
@@ -1389,8 +1383,8 @@ async function handleContextMenuAction(item) {
     showMoveDialog(data)
   } else if (item.key === 'permissions') {
     await showPermDialog(data)
-  } else if (item.key === 'add-root') {
-    await addDirectoryAsRoot(data)
+  } else if (item.key === 'pin') {
+    await togglePin(data)
   }
 }
 
@@ -2361,6 +2355,11 @@ html, body, #app { height: 100%; overflow: hidden; }
 .proto-tag {
   margin-left: 6px;
   vertical-align: middle;
+}
+
+.pin-icon {
+  color: #e6a23c;
+  font-size: 14px;
 }
 
 .context-menu {

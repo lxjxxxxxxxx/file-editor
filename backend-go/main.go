@@ -147,6 +147,12 @@ type rootPathEntry struct {
 	RootPath string `json:"rootPath,omitempty"`
 }
 
+// pinnedPath 表示一条收藏路径记录。
+type pinnedPath struct {
+	RootIndex int    `json:"rootIndex"`
+	Path      string `json:"path"`
+}
+
 // config 表示配置文件在内存中的结构。
 type config struct {
 	// Token 表示 API 鉴权令牌。
@@ -169,6 +175,8 @@ type config struct {
 	BinaryExtensions []string `json:"binaryExtensions"`
 	// BinaryFileNames 表示明确按二进制处理的文件名列表。
 	BinaryFileNames []string `json:"binaryFileNames"`
+	// PinnedPaths 表示收藏的文件或目录路径列表。
+	PinnedPaths []pinnedPath `json:"pinnedPaths"`
 	// RootPaths 表示标准化后的根目录配置。
 	RootPaths []rootPathEntry `json:"-"`
 }
@@ -223,6 +231,8 @@ type fileNode struct {
 	Mode string `json:"mode"`
 	// Type 表示根节点的协议类型（仅根节点有效）。
 	Type string `json:"type,omitempty"`
+	// Pinned 表示当前节点是否被收藏。
+	Pinned bool `json:"pinned,omitempty"`
 	// Children 表示目录节点的子节点，占位或实际内容。
 	Children interface{} `json:"children,omitempty"`
 }
@@ -325,6 +335,8 @@ type app struct {
 	binaryExtensions map[string]struct{}
 	// binaryFileNames 表示运行期二进制文件名集合。
 	binaryFileNames map[string]struct{}
+	// pinnedPaths 表示运行期收藏路径集合，用于快速判断。
+	pinnedPaths map[pinnedPath]struct{}
 	// staticEnabled 表示是否启用前端静态文件托管。
 	staticEnabled bool
 }
@@ -450,6 +462,7 @@ func main() {
 	mux.HandleFunc("/api/files/move", a.withAPIAuth(a.handleFilesMove))
 	mux.HandleFunc("/api/files/stat", a.withAPIAuth(a.handleFilesStat))
 	mux.HandleFunc("/api/files/permissions", a.withAPIAuth(a.handleFilesPermissions))
+	mux.HandleFunc("/api/files/pin", a.withAPIAuth(a.handleFilesPin))
 	mux.HandleFunc("/api/roots", a.withAPIAuth(a.handleRoots))
 	mux.HandleFunc("/", a.handleRoot)
 
@@ -727,7 +740,9 @@ func (a *app) handleFilesTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tree := make([]fileNode, 0, len(entries))
+	tree := make([]fileNode, 0, len(entries) + 8)
+	existingPaths := make(map[string]bool, len(entries))
+
 	for _, entry := range entries {
 		name := entry.Name()
 		if a.shouldExclude(name) {
@@ -744,6 +759,12 @@ func (a *app) handleFilesTree(w http.ResponseWriter, r *http.Request) {
 		if subDir != "" {
 			rel = pathJoin(subDir, name)
 		}
+		existingPaths[rel] = true
+
+		pp := pinnedPath{RootIndex: rootIndex, Path: rel}
+		a.mu.RLock()
+		_, pinned := a.pinnedPaths[pp]
+		a.mu.RUnlock()
 
 		node := fileNode{
 			Name:        name,
@@ -754,6 +775,7 @@ func (a *app) handleFilesTree(w http.ResponseWriter, r *http.Request) {
 			Size:        stat.Size(),
 			Mtime:       stat.ModTime().UnixMilli(),
 			Mode:        formatMode(stat.Mode()),
+			Pinned:      pinned,
 		}
 		if stat.IsDir() {
 			node.Children = []fileNode{}
@@ -761,7 +783,38 @@ func (a *app) handleFilesTree(w http.ResponseWriter, r *http.Request) {
 		tree = append(tree, node)
 	}
 
-	sortNodes(tree)
+	// 展开根节点时，额外注入不在当前目录下的收藏路径作为快捷方式
+	if subDir == "" {
+		var pinnedEntries []pinnedPath
+		a.mu.RLock()
+		for _, pp := range a.config.PinnedPaths {
+			if pp.RootIndex == rootIndex && !existingPaths[pp.Path] {
+				pinnedEntries = append(pinnedEntries, pp)
+			}
+		}
+		a.mu.RUnlock()
+
+		for _, pp := range pinnedEntries {
+			pinReal := path.Join(real, pp.Path)
+			stat, err := fs.Lstat(pinReal)
+			if err != nil {
+				continue
+			}
+			tree = append(tree, fileNode{
+				Name:        path.Base(pp.Path),
+				Path:        pp.Path,
+				RootIndex:   rootIndex,
+				IsDirectory: stat.IsDir(),
+				IsFile:      !stat.IsDir(),
+				Size:        stat.Size(),
+				Mtime:       stat.ModTime().UnixMilli(),
+				Mode:        formatMode(stat.Mode()),
+				Pinned:      true,
+			})
+		}
+	}
+
+	sortPinnedNodes(tree)
 	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: tree})
 }
 
@@ -1185,6 +1238,98 @@ func (a *app) handleFilesPermissions(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// pinRequest 表示添加收藏的请求体。
+type pinRequest struct {
+	RootIndex *int   `json:"rootIndex"`
+	Path      string `json:"path"`
+}
+
+// handleFilesPin 根据 HTTP 方法分发收藏相关操作。
+func (a *app) handleFilesPin(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		a.handlePinsGet(w, r)
+	case http.MethodPost:
+		a.handlePinAdd(w, r)
+	case http.MethodDelete:
+		a.handlePinRemove(w, r)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, apiResponse{Success: false, Error: "方法不允许"})
+	}
+}
+
+// handlePinsGet 返回所有收藏路径。
+func (a *app) handlePinsGet(w http.ResponseWriter, r *http.Request) {
+	a.mu.RLock()
+	pins := a.config.PinnedPaths
+	a.mu.RUnlock()
+
+	writeJSON(w, http.StatusOK, apiResponse{Success: true, Data: pins})
+}
+
+// handlePinAdd 添加一条收藏路径。
+func (a *app) handlePinAdd(w http.ResponseWriter, r *http.Request) {
+	var req pinRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: err.Error()})
+		return
+	}
+	if req.RootIndex == nil || req.Path == "" {
+		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "缺少 rootIndex 或 path"})
+		return
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	pp := pinnedPath{RootIndex: *req.RootIndex, Path: req.Path}
+	if _, exists := a.pinnedPaths[pp]; exists {
+		writeJSON(w, http.StatusOK, apiResponse{Success: true, Message: "已收藏"})
+		return
+	}
+
+	a.config.PinnedPaths = append(a.config.PinnedPaths, pp)
+	a.pinnedPaths[pp] = struct{}{}
+
+	if err := a.saveConfigLocked(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{Success: false, Error: "保存配置失败"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, apiResponse{Success: true, Message: "收藏成功"})
+}
+
+// handlePinRemove 移除一条收藏路径。
+func (a *app) handlePinRemove(w http.ResponseWriter, r *http.Request) {
+	rootIndex := parseIntWithDefault(r.URL.Query().Get("rootIndex"), -1)
+	filePath := r.URL.Query().Get("path")
+	if rootIndex < 0 || filePath == "" {
+		writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "缺少 rootIndex 或 path"})
+		return
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	pp := pinnedPath{RootIndex: rootIndex, Path: filePath}
+
+	filtered := make([]pinnedPath, 0, len(a.config.PinnedPaths))
+	for _, p := range a.config.PinnedPaths {
+		if p.RootIndex != rootIndex || p.Path != filePath {
+			filtered = append(filtered, p)
+		}
+	}
+	a.config.PinnedPaths = filtered
+	delete(a.pinnedPaths, pp)
+
+	if err := a.saveConfigLocked(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{Success: false, Error: "保存配置失败"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, apiResponse{Success: true, Message: "已取消收藏"})
+}
+
 // handleRoots 根据 HTTP 方法分发常驻目录相关操作。
 func (a *app) handleRoots(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -1410,6 +1555,7 @@ func (a *app) saveConfigLocked() error {
 		TextFileNames    []string        `json:"textFileNames"`
 		BinaryExtensions []string        `json:"binaryExtensions"`
 		BinaryFileNames  []string        `json:"binaryFileNames"`
+		PinnedPaths      []pinnedPath    `json:"pinnedPaths"`
 	}{
 		Token:            cfg.Token,
 		Port:             cfg.Port,
@@ -1420,6 +1566,7 @@ func (a *app) saveConfigLocked() error {
 		TextFileNames:    cfg.TextFileNames,
 		BinaryExtensions: cfg.BinaryExtensions,
 		BinaryFileNames:  cfg.BinaryFileNames,
+		PinnedPaths:      cfg.PinnedPaths,
 	}, "", "  ")
 	if err != nil {
 		return err
@@ -1488,6 +1635,11 @@ func (a *app) rebuildRuntimeConfigLocked() {
 
 	a.binaryFileNames = normalizeStringSet(nil, false)
 	mergeStringSet(a.binaryFileNames, cfgStringSlice(a.config.BinaryFileNames), false)
+
+	a.pinnedPaths = make(map[pinnedPath]struct{}, len(a.config.PinnedPaths))
+	for _, pp := range a.config.PinnedPaths {
+		a.pinnedPaths[pp] = struct{}{}
+	}
 }
 
 // toSFTPConfig 将 rootPathEntry 转换为 SFTP 连接配置。
@@ -1856,9 +2008,12 @@ func pathJoin(base, name string) string {
 	return base + "/" + name
 }
 
-// sortNodes 将目录排在前面，并按名称排序文件树节点。
-func sortNodes(nodes []fileNode) {
+// sortPinnedNodes 将收藏节点置顶，其余按目录优先、名称排序。
+func sortPinnedNodes(nodes []fileNode) {
 	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].Pinned != nodes[j].Pinned {
+			return nodes[i].Pinned
+		}
 		if nodes[i].IsDirectory != nodes[j].IsDirectory {
 			return nodes[i].IsDirectory
 		}
