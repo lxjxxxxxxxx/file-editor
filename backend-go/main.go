@@ -45,7 +45,7 @@ const defaultConfigFileContent = `{
 
 var (
 	// configPath 表示当前 Go 后端读取和保存配置文件的位置。
-	configPath = filepath.Join(baseDir(), "config.json")
+	configPath = filepath.Join(baseDir(), "config", "config.json")
 	// frontendDistPath 表示前端构建产物目录，用于生产模式下的静态托管。
 	frontendDistPath = filepath.Join(baseDir(), "dist")
 	// textExtensions 用于快速判断带扩展名文件是否按文本文件处理。
