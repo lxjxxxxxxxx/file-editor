@@ -17,6 +17,8 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"crypto/rand"
+	"encoding/hex"
 	"strings"
 	"sync"
 	"time"
@@ -33,19 +35,6 @@ const (
 	// systemdServiceName 表示 Linux 安装模式下写入的 systemd 服务名。
 	systemdServiceName = "file-editor-backend.service"
 )
-
-const defaultConfigFileContent = `{
-  "token": "file-editor-2024-secret-token",
-  "port": 3002,
-  "rootPaths": [],
-  "excludedNames": [],
-  "excludeHidden": false,
-  "textExtensions": [],
-  "textFileNames": [],
-  "binaryExtensions": [],
-  "binaryFileNames": []
-}
-`
 
 var (
 	// configPath 表示当前 Go 后端读取和保存配置文件的位置。
@@ -1532,7 +1521,41 @@ func (a *app) loadConfig() error {
 	return nil
 }
 
-// ensureConfigFileExists 确保配置文件存在，不存在时写入内置的完整模板。
+// generateRandomToken 生成 64 字符随机十六进制字符串作为访问 Token。
+func generateRandomToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("生成随机 Token 失败: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// generateDefaultConfig 生成带随机 Token 的默认配置文件内容。
+func generateDefaultConfig() ([]byte, error) {
+	token, err := generateRandomToken()
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("生成访问 Token: %s", token)
+	log.Printf("请在浏览器 URL 中添加: ?token=%s", token)
+
+	return json.MarshalIndent(struct {
+		Token            string   `json:"token"`
+		Port             int      `json:"port"`
+		RootPaths        []string `json:"rootPaths"`
+		ExcludedNames    []string `json:"excludedNames"`
+		ExcludeHidden    bool     `json:"excludeHidden"`
+		TextExtensions   []string `json:"textExtensions"`
+		TextFileNames    []string `json:"textFileNames"`
+		BinaryExtensions []string `json:"binaryExtensions"`
+		BinaryFileNames  []string `json:"binaryFileNames"`
+	}{
+		Token: token,
+		Port:  3002,
+	}, "", "  ")
+}
+
+// ensureConfigFileExists 确保配置文件存在，不存在时写入带随机 token 的默认配置。
 func ensureConfigFileExists() error {
 	if _, err := os.Stat(configPath); err == nil {
 		return nil
@@ -1543,7 +1566,11 @@ func ensureConfigFileExists() error {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(configPath, []byte(defaultConfigFileContent), 0o644)
+	data, err := generateDefaultConfig()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, data, 0o600)
 }
 
 // saveConfigLocked 将当前内存中的配置写回磁盘，调用方需持有写锁。
@@ -1577,7 +1604,7 @@ func (a *app) saveConfigLocked() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(configPath, data, 0o644)
+	return os.WriteFile(configPath, data, 0o600)
 }
 
 // rebuildRuntimeConfigLocked 基于原始配置重建运行期缓存字段，调用方需持有写锁。
