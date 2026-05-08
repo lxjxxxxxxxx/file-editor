@@ -1395,13 +1395,19 @@ func (a *app) handleRootsAdd(w http.ResponseWriter, r *http.Request) {
 		})
 	} else {
 		if req.Host == "" {
-			writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "远程主机地址不能为空"})
+			writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "远程服务器地址不能为空"})
 			return
 		}
 
 		// 添加前先测试连接
-		if err := testSFTPConnection(req); err != nil {
-			writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "连接验证失败: " + err.Error()})
+		var connErr error
+		if strings.ToLower(strings.TrimSpace(req.Type)) == "sftp" {
+			connErr = testSFTPConnection(req)
+		} else if strings.ToLower(strings.TrimSpace(req.Type)) == "webdav" {
+			connErr = testWebDAVConnection(req)
+		}
+		if connErr != nil {
+			writeJSON(w, http.StatusBadRequest, apiResponse{Success: false, Error: "连接验证失败: " + connErr.Error()})
 			return
 		}
 
@@ -1605,6 +1611,17 @@ func (a *app) rebuildRuntimeConfigLocked() {
 				rootPath: remoteRoot,
 				isLocal:  false,
 			})
+		} else if rootType == "webdav" {
+			remoteRoot := strings.TrimSpace(item.RootPath)
+			if remoteRoot == "" {
+				remoteRoot = "/"
+			}
+			a.roots = append(a.roots, rootFS{
+				entry:    item,
+				fs:       vfs.NewWebDAVFS(toWebDAVConfig(item), remoteRoot),
+				rootPath: remoteRoot,
+				isLocal:  false,
+			})
 		}
 	}
 
@@ -1652,6 +1669,25 @@ func toSFTPConfig(entry rootPathEntry) vfs.SFTPConfig {
 		AuthMethod: entry.AuthMethod,
 		KeyPath:    entry.KeyPath,
 	}
+}
+
+// toWebDAVConfig 将 rootPathEntry 转换为 WebDAV 连接配置。
+func toWebDAVConfig(entry rootPathEntry) vfs.WebDAVConfig {
+	return vfs.WebDAVConfig{
+		URL:      entry.Host,
+		Username: entry.Username,
+		Password: entry.Password,
+	}
+}
+
+// testWebDAVConnection 测试给定配置的 WebDAV 连接是否可用。
+func testWebDAVConnection(req addRootRequest) error {
+	config := vfs.WebDAVConfig{
+		URL:      req.Host,
+		Username: req.Username,
+		Password: req.Password,
+	}
+	return vfs.TestWebDAVConnection(config)
 }
 
 // testSFTPConnection 测试给定配置的 SFTP 连接是否可用。

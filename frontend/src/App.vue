@@ -56,7 +56,7 @@
             <template #default="{ data }">
               <span class="tree-node" :class="{ 'is-root': data.isRoot }">
                 <el-icon v-if="data.pinned" class="pin-icon"><StarFilled /></el-icon>
-                <el-icon v-else-if="data.type === 'sftp'"><Monitor /></el-icon>
+                <el-icon v-else-if="data.type === 'sftp' || data.type === 'webdav'"><Monitor /></el-icon>
                 <el-icon v-else-if="isTreeNodeRefreshing(data)" class="tree-loading-icon"><Loading /></el-icon>
                 <el-icon v-else-if="data.isDirectory"><Folder /></el-icon>
                 <el-icon v-else><Document /></el-icon>
@@ -436,6 +436,7 @@
           <el-select v-model="newRootType" style="width: 100%">
             <el-option label="Local — 本地文件系统" value="local" />
             <el-option label="SFTP — SSH 文件传输" value="sftp" />
+            <el-option label="WebDAV — HTTP 文件传输" value="webdav" />
           </el-select>
         </el-form-item>
 
@@ -475,6 +476,25 @@
           </el-form-item>
           <el-form-item label="远程根目录">
             <el-input v-model="sftpRootPath" placeholder="如: /var/www（留空则使用 /）" @keyup.enter="handleAddRoot" />
+          </el-form-item>
+        </template>
+
+        <!-- WebDAV -->
+        <template v-if="newRootType === 'webdav'">
+          <el-form-item label="服务器地址">
+            <el-input v-model="webdavUrl" placeholder="如: https://nextcloud.example.com/remote.php/dav/files/user" @keyup.enter="handleAddRoot" />
+            <el-text size="small" type="info" style="margin-top: 4px; display: block;">
+              完整的 WebDAV 访问地址，包含协议和路径
+            </el-text>
+          </el-form-item>
+          <el-form-item label="用户名">
+            <el-input v-model="webdavUsername" placeholder="HTTP 基本认证用户名（可选）" @keyup.enter="handleAddRoot" />
+          </el-form-item>
+          <el-form-item label="密码">
+            <el-input v-model="webdavPassword" type="password" show-password placeholder="HTTP 基本认证密码（可选）" @keyup.enter="handleAddRoot" />
+          </el-form-item>
+          <el-form-item label="远程根目录">
+            <el-input v-model="webdavRootPath" placeholder="如: /projects（留空则使用 /）" @keyup.enter="handleAddRoot" />
           </el-form-item>
         </template>
 
@@ -560,6 +580,11 @@ const sftpPassword = ref('')
 const sftpAuthMethod = ref('password')
 const sftpKeyPath = ref('')
 const sftpRootPath = ref('')
+// WebDAV 字段
+const webdavUrl = ref('')
+const webdavUsername = ref('')
+const webdavPassword = ref('')
+const webdavRootPath = ref('')
 
 // 编辑别名
 const editAliasDialogVisible = ref(false)
@@ -1969,6 +1994,10 @@ function showAddRootDialog() {
   sftpAuthMethod.value = 'password'
   sftpKeyPath.value = ''
   sftpRootPath.value = ''
+  webdavUrl.value = ''
+  webdavUsername.value = ''
+  webdavPassword.value = ''
+  webdavRootPath.value = ''
   addRootDialogVisible.value = true
 }
 
@@ -1994,6 +2023,14 @@ async function handleAddRoot() {
         authMethod: sftpAuthMethod.value,
         keyPath: sftpKeyPath.value.trim(),
         rootPath: sftpRootPath.value.trim() || '/',
+      })
+    } else if (newRootType.value === 'webdav') {
+      if (!webdavUrl.value.trim()) { ElMessage.warning('请输入服务器地址'); return }
+      Object.assign(config, {
+        host: webdavUrl.value.trim(),
+        username: webdavUsername.value.trim(),
+        password: webdavPassword.value,
+        rootPath: webdavRootPath.value.trim() || '/',
       })
     }
 
