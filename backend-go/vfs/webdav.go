@@ -58,14 +58,17 @@ func TestWebDAVConnection(config WebDAVConfig) error {
 }
 
 // NewWebDAVFS 创建 WebDAV 文件系统实例，root 为远程根路径。
-func NewWebDAVFS(config WebDAVConfig, root string) FileSystem {
-	u, _ := url.Parse(config.URL)
+func NewWebDAVFS(config WebDAVConfig, root string) (FileSystem, error) {
+	u, err := url.Parse(config.URL)
+	if err != nil {
+		return nil, fmt.Errorf("解析 WebDAV URL 失败: %w", err)
+	}
 	return &WebDAVFS{
 		config: config,
 		base:   u,
 		root:   cleanPath(root),
 		client: &http.Client{Timeout: 30 * time.Second},
-	}
+	}, nil
 }
 
 // cleanPath 清理路径，确保以 "/" 开头且不以 "/" 结尾（根 "/" 除外）。

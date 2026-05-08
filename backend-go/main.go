@@ -1643,9 +1643,14 @@ func (a *app) rebuildRuntimeConfigLocked() {
 			if remoteRoot == "" {
 				remoteRoot = "/"
 			}
+			webdavFS, err := vfs.NewWebDAVFS(toWebDAVConfig(item), remoteRoot)
+			if err != nil {
+				log.Printf("跳过无效 WebDAV 根目录: %v", err)
+				continue
+			}
 			a.roots = append(a.roots, rootFS{
 				entry:    item,
-				fs:       vfs.NewWebDAVFS(toWebDAVConfig(item), remoteRoot),
+				fs:       webdavFS,
 				rootPath: remoteRoot,
 				isLocal:  false,
 			})
