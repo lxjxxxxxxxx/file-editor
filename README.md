@@ -1,8 +1,8 @@
 # 在线文件编辑器
 
-一个基于 Web 的在线文件编辑器。前端使用 Vue 3、Element Plus 和 Monaco Editor，后端使用纯 Go 标准库实现，不依赖第三方 Go 包，也不使用 CGO。
+一个基于 Web 的在线文件编辑器。前端使用 Vue 3、Element Plus 和 Monaco Editor，后端使用 Go 实现，支持本地、SFTP 和 WebDAV 三种文件系统协议。
 
-项目当前以“常驻目录 + 文件树右键菜单”为主要交互方式，适合在受控目录内快速浏览、编辑和管理文本文件。
+项目以“常驻目录 + 文件树右键菜单”为主要交互方式，适合在受控目录内快速浏览、编辑和管理文本文件。
 
 ## 界面截图
 
@@ -10,12 +10,13 @@
 
 ## 功能特性
 
-- 多常驻目录：支持添加、移除、编辑别名，文件树按根目录懒加载。
+- 多常驻目录：支持本地、SFTP、WebDAV 三种类型，支持添加、移除、编辑别名，文件树按根目录懒加载。
 - Monaco 编辑器：支持语法高亮、代码折叠、Tab 多文件编辑、`Ctrl+S` 保存。
 - 右键菜单操作：
   - 文件：详细信息、重命名、创建副本、删除、复制、移动、权限。
   - 普通目录：详细信息、新建文件、新建目录、重命名、创建副本、删除、复制、移动、权限、刷新、添加为常驻目录。
   - 常驻根目录：详细信息、新建文件、新建目录、刷新，并提供别名编辑和移除快捷按钮。
+- 收藏置顶：可将常用目录收藏后固定在文件树顶层，方便快速访问。
 - 创建副本：目录在当前目录生成 `_backup` 副本，文件生成 `.backup` 副本；冲突时自动追加序号。
 - 详细信息：显示名称、类型、所属根目录、相对路径、绝对路径、大小、修改时间、权限，以及平台身份信息。
   - Linux：显示 UID/GID，并尽量解析用户名和组名。
@@ -27,19 +28,19 @@
 ## 技术架构
 
 ```text
-┌──────────────────────────────┐
-│ Vue 3 + Vite + Element Plus  │
-│ Monaco Editor                │
-└───────────────┬──────────────┘
+┌────────────────────────────────┐
+│ Vue 3 + Vite + Element Plus    │
+│ Monaco Editor                  │
+└───────────────┬────────────────┘
                 │ /api, X-Auth-Token
-┌───────────────▼──────────────┐
-│ Go HTTP Server               │
-│ token auth / static hosting  │
-└───────────────┬──────────────┘
+┌───────────────▼────────────────┐
+│ Go HTTP Server                 │
+│ token auth / static hosting    │
+└───────────────┬────────────────┘
                 │
-┌───────────────▼──────────────┐
-│ 文件系统 rootPaths           │
-└──────────────────────────────┘
+┌───────────────▼────────────────┐
+│ VFS Layer (Local / SFTP / WebDAV)│
+└────────────────────────────────┘
 ```
 
 ## 项目结构
@@ -47,10 +48,15 @@
 ```text
 file-editor/
 ├── backend-go/
-│   ├── main.go                    # Go 后端入口和 API
+│   ├── main.go                    # Go 后端入口、路由、API 处理器
 │   ├── file_identity_linux.go     # Linux UID/GID 解析
 │   ├── file_identity_windows.go   # Windows Owner/Group/SID 解析
 │   ├── file_identity_other.go     # 其他平台身份信息回退
+│   ├── vfs/
+│   │   ├── vfs.go                 # FileSystem 接口定义
+│   │   ├── local.go               # 本地文件系统实现
+│   │   ├── sftp.go                # SFTP 远程文件系统实现
+│   │   └── webdav.go              # WebDAV 远程文件系统实现
 │   ├── go.mod
 │   ├── dist/                      # 前端生产构建产物目录
 │   └── README.md
@@ -67,11 +73,11 @@ file-editor/
 
 ## 配置
 
-后端从可执行文件所在目录读取 `config.json`。如果不存在，会自动生成默认配置。
+后端从可执行文件所在目录读取 `config/config.json`。如果不存在，会自动生成带随机 token 的默认配置。
 
 ```json
 {
-  "token": "file-editor-2024-secret-token",
+  "token": "7a3f2b8e1c9d...",
   "port": 3002,
   "rootPaths": [],
   "excludedNames": [],
@@ -83,27 +89,48 @@ file-editor/
 }
 ```
 
+首次启动时 token 由 `crypto/rand` 随机生成并打印在终端，配置文件权限为 `0600`（仅所有者可读）。
+
 字段说明：
 
 | 字段 | 说明 |
 | --- | --- |
-| `token` | API 访问令牌。前端会通过 URL 中的 `?token=` 读取，并放入 `X-Auth-Token` 请求头。 |
+| `token` | API 访问令牌，首次启动随机生成。前端通过 `?token=` 或 `X-Auth-Token` 请求头提供。 |
 | `port` | 后端监听端口，默认 `3002`。 |
-| `rootPath` | 旧版单目录配置字段，仅用于兼容历史配置。 |
-| `rootPaths` | 常驻根目录列表，支持字符串数组或 `{ "path": "...", "alias": "..." }` 对象数组。 |
+| `rootPaths` | 常驻根目录列表，支持本地、SFTP、WebDAV 三种类型。 |
 | `excludedNames` | 文件树中过滤的文件名或目录名，按名称精确匹配。 |
 | `excludeHidden` | 是否过滤以 `.` 开头的隐藏文件和目录。 |
 | `textExtensions` | 额外按文本处理的扩展名。 |
 | `textFileNames` | 额外按文本处理的文件名，适合无后缀配置文件。 |
 | `binaryExtensions` | 明确按二进制处理的扩展名。 |
 | `binaryFileNames` | 明确按二进制处理的文件名。 |
+| `pinnedPaths` | 收藏路径列表（由前端管理，无需手动修改）。 |
 
-`rootPaths` 示例：
+`rootPaths` 支持三种类型：
 
 ```json
 [
   "C:/projects/file-editor",
-  { "path": "D:/work", "alias": "工作目录" }
+  { "path": "D:/work", "alias": "工作目录" },
+  {
+    "type": "sftp",
+    "alias": "远程服务器",
+    "host": "192.168.1.100",
+    "port": 22,
+    "username": "root",
+    "password": "...",
+    "authMethod": "password",
+    "keyPath": "/home/user/.ssh/id_rsa",
+    "rootPath": "/var/www"
+  },
+  {
+    "type": "webdav",
+    "alias": "网盘",
+    "host": "https://example.com/remote.php/dav/files/user",
+    "username": "user",
+    "password": "...",
+    "rootPath": "/"
+  }
 ]
 ```
 
@@ -130,10 +157,10 @@ npm run dev
 - 后端：`http://localhost:3002`
 - Vite 会把 `/api` 代理到 `http://localhost:3002`
 
-访问时需要携带 token：
+访问时需要携带 token（以启动时终端打印的为准）：
 
 ```text
-http://localhost:5174/?token=file-editor-2024-secret-token
+http://localhost:5174/?token=7a3f2b8e1c9d...
 ```
 
 ## 生产运行
@@ -169,6 +196,7 @@ go run .
 | `/api/files/move` | POST | 跨根目录移动文件或目录。 |
 | `/api/files/stat` | GET | 获取文件、目录或根目录详细信息。 |
 | `/api/files/permissions` | POST | 修改权限位。 |
+| `/api/files/pin` | GET/POST/DELETE | 查询、添加、删除收藏路径。 |
 | `/api/roots` | GET/POST/PUT/DELETE | 查询、添加、修改别名、移除常驻目录。 |
 
 常见参数：
@@ -179,6 +207,7 @@ go run .
 
 ## 安全边界
 
+- Token 首次启动由 `crypto/rand` 随机生成，配置文件权限为 `0600`（仅所有者可读）。
 - 后端会将所有文件路径解析到对应 `rootPaths` 下，拒绝越权访问。
 - 请求体限制为 10MB，单文件在线编辑限制为 2MB。
 - JSON 请求体会拒绝未知字段，减少误传参数。
